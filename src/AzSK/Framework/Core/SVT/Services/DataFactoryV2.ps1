@@ -1,26 +1,20 @@
 #using namespace Microsoft.Azure.Commands.DataFactory.Models
 Set-StrictMode -Version Latest 
-class DataFactoryV2: SVTBase
+class DataFactoryV2: AzSVTBase
 {       
     hidden [PSObject] $ResourceObject;
     hidden [ADFV2Details] $adfDetails = [ADFV2Details]::new()
-
-    DataFactoryV2([string] $subscriptionId, [string] $resourceGroupName, [string] $resourceName): 
-        Base($subscriptionId, $resourceGroupName, $resourceName) 
-    { 
-    }
 
 	DataFactoryV2([string] $subscriptionId, [SVTResource] $svtResource): 
         Base($subscriptionId, $svtResource) 
     { 
          $this.GetResourceObject();
-
     }
 
     hidden [PSObject] GetResourceObject()
     {
         if (-not $this.ResourceObject) {
-            $this.ResourceObject = Get-AzureRmDataFactoryV2 -Name $this.ResourceContext.ResourceName -ResourceGroupName $this.ResourceContext.ResourceGroupName                                         
+            $this.ResourceObject = Get-AzDataFactoryV2 -Name $this.ResourceContext.ResourceName -ResourceGroupName $this.ResourceContext.ResourceGroupName                                         
           
 				if(-not $this.ResourceObject)
 				{
@@ -36,24 +30,24 @@ class DataFactoryV2: SVTBase
     
         # Get all the Linked Service
 		
-        $this.adfDetails.LinkedserviceDetails += Get-AzureRmDataFactoryV2LinkedService -ResourceGroupName $this.ResourceContext.ResourceGroupName -DataFactoryName $this.ResourceContext.ResourceName
+        $this.adfDetails.LinkedserviceDetails += Get-AzDataFactoryV2LinkedService -ResourceGroupName $this.ResourceContext.ResourceGroupName -DataFactoryName $this.ResourceContext.ResourceName
 	    
         try{
         
             # Get pipelines count
 
             $pipelines = @();
-            $pipelines += Get-AzureRmDataFactoryV2Pipeline -ResourceGroupName $this.ResourceContext.ResourceGroupName -DataFactoryName $this.ResourceContext.ResourceName;
+            $pipelines += Get-AzDataFactoryV2Pipeline -ResourceGroupName $this.ResourceContext.ResourceGroupName -DataFactoryName $this.ResourceContext.ResourceName;
 		    $this.adfDetails.PipelinesCount = ($pipelines | Measure-Object).Count
         
             #Get Dataset count
             $datasets = @();
-            $datasets += Get-AzureRmDataFactoryV2Dataset -ResourceGroupName $this.ResourceContext.ResourceGroupName -DataFactoryName $this.ResourceContext.ResourceName;
+            $datasets += Get-AzDataFactoryV2Dataset -ResourceGroupName $this.ResourceContext.ResourceGroupName -DataFactoryName $this.ResourceContext.ResourceName;
             $this.adfDetails.DatasetsCount +=  ($datasets | Measure-Object).Count
 
             #Get Triggers count
             $triggers = @();
-            $triggers += Get-AzureRmDataFactoryV2Trigger -ResourceGroupName $this.ResourceContext.ResourceGroupName -DataFactoryName $this.ResourceContext.ResourceName;
+            $triggers += Get-AzDataFactoryV2Trigger -ResourceGroupName $this.ResourceContext.ResourceGroupName -DataFactoryName $this.ResourceContext.ResourceName;
             $this.adfDetails.TriggersCount +=  ($triggers | Measure-Object).Count;
         }
         catch{

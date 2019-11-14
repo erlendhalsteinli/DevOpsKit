@@ -25,19 +25,11 @@ class APIConnectionConnectorsMetadata
 	[APIConnectionNotApprovedConnector[]] $notApprovedConnectors = @()	
 }
 
-class APIConnection: SVTBase
+class APIConnection: AzSVTBase
 {   
 	hidden [PSObject] $LogicAppObject;
     hidden [PSObject] $ResourceObject;
 	hidden [APIConnectionConnectorsMetadata] $LogicAppConnectorsMetadata
-
-	
-    APIConnection([string] $subscriptionId, [string] $resourceGroupName, [string] $resourceName): 
-        Base($subscriptionId, $resourceGroupName, $resourceName) 
-    { 
-        $this.GetResourceObject();		
-		$this.LogicAppConnectorsMetadata = [APIConnectionConnectorsMetadata] ($this.LoadServerConfigFile("LogicApps.Connectors.json"));
-    }
 
     APIConnection([string] $subscriptionId, [SVTResource] $svtResource): 
         Base($subscriptionId, $svtResource) 
@@ -52,7 +44,7 @@ class APIConnection: SVTBase
 
 		if(($logicAppConnectors | Measure-Object).count -eq 2)
 		{
-			$this.LogicAppObject = Get-AzureRmResource -Name $logicAppConnectors[0] `
+			$this.LogicAppObject = Get-AzResource -Name $logicAppConnectors[0] `
                                             -ResourceGroupName $this.ResourceContext.ResourceGroupName -ResourceType 'Microsoft.Logic/Workflows'
 		}
 		else
@@ -104,7 +96,7 @@ class APIConnection: SVTBase
 		}
 		else
 		{
-			$apiConObj = Get-AzureRmResource -ResourceId $this.ResourceContext.ResourceId
+			$apiConObj = Get-AzResource -ResourceId $this.ResourceContext.ResourceId
 			$apiName=$apiConObj.Properties.Api.Name           				
 			
 			$Connector = New-Object PSObject

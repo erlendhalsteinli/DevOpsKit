@@ -2,11 +2,6 @@
 Set-StrictMode -Version Latest
 class ERvNet : SVTIaasBase
 {
-    ERvNet([string] $subscriptionId, [string] $resourceGroupName, [string] $resourceName):
-        Base($subscriptionId, $resourceGroupName, $resourceName)
-    {
-    }
-
 	ERvNet([string] $subscriptionId, [SVTResource] $svtResource):
         Base($subscriptionId, $svtResource)
     {
@@ -110,11 +105,31 @@ class ERvNet : SVTIaasBase
 
 	hidden [ControlResult] CheckVnetPeering([ControlResult] $controlResult)
     {
-        $vnetPeerings = Get-AzureRmVirtualNetworkPeering -VirtualNetworkName $this.ResourceContext.ResourceName -ResourceGroupName $this.ResourceContext.ResourceGroupName
+        $whiteListedRGs = $this.ControlSettings.ERvNet.WhiteListedRGs
+        $whiteListedRemoteVirtualNetworkId = $this.ControlSettings.ERvNet.WhiteListedRemoteVirtualNetworkId
+        
+        $vnetPeerings = Get-AzVirtualNetworkPeering -VirtualNetworkName $this.ResourceContext.ResourceName -ResourceGroupName $this.ResourceContext.ResourceGroupName
         if($null -ne $vnetPeerings -and ($vnetPeerings|Measure-Object).count -gt 0)
         {
-			$controlResult.AddMessage([VerificationResult]::Failed, [MessageData]::new("Below peering found on ERVNet", $vnetPeerings));
-			$controlResult.SetStateData("Peering found on ERVNet", $vnetPeerings);
+            $filteredVnetPeerings = @()
+            # Filter whitelisted vNet peerings, if resource is in whitelisted RG
+            if((-not [string]::IsNullOrEmpty($whiteListedRemoteVirtualNetworkId)) -and (($whiteListedRGs | Measure-Object).Count -gt 0) -and ($whiteListedRGs -contains $this.ResourceContext.ResourceGroupName))
+            {
+                $filteredVnetPeerings += $vnetPeerings | Where-Object { $_.RemoteVirtualNetwork.id -notlike $whiteListedRemoteVirtualNetworkId }
+            }else{
+                # All vNet peering are non-compliant, if resource is not in whitelisted RG
+                $filteredVnetPeerings = $vnetPeerings
+            }
+
+            # If there is any non-compliant vNet peering fail the control
+            if($null -ne $filteredVnetPeerings -and ($filteredVnetPeerings|Measure-Object).count -gt 0)
+            {
+                $controlResult.AddMessage([VerificationResult]::Failed, [MessageData]::new("Below peering found on ERVNet", $vnetPeerings));
+                $controlResult.SetStateData("Peering found on ERVNet", $vnetPeerings);
+            }else{
+                $controlResult.AddMessage([VerificationResult]::Passed, [MessageData]::new("No additional VNet peerings found on ERVNet", $vnetPeerings));
+            }
+
         }
         else
         {
@@ -192,12 +207,55 @@ class ERvNet : SVTIaasBase
 
 	hidden [ControlResult] CheckUDRAddedOnSubnet([ControlResult] $controlResult)
     {
+
+        $whiteListedRGs = $this.ControlSettings.ERvNet.WhiteListedRGs
+        $whiteListedaddressPrefix =  $this.ControlSettings.ERvNet.WhiteListedaddressPrefix
+        $whiteListednextHopType =  $this.ControlSettings.ERvNet.WhiteListednextHopType
+      
         $subnetsWithUDRs = $this.ResourceObject.Subnets | Where-Object {$null -ne $_.RouteTable -and -not [System.String]::IsNullOrWhiteSpace($_.RouteTable.Id)}
 
         if($null -ne $subnetsWithUDRs -and ($subnetsWithUDRs | Measure-Object).count -gt 0)
         {
-			$controlResult.AddMessage([VerificationResult]::Failed, [MessageData]::new(($subnetsWithUDRs | Select-Object Name, RouteTableText)));
-			$controlResult.SetStateData("UDRs found on any Subnet of ERVNet", $subnetsWithUDRs);
+            $nonCompliantSubnetsWithUDRs = @()
+            # Filter whitelisted UDR's, if resource is in whitelisted RG
+            if(($whiteListedRGs | Measure-Object).Count -gt 0 -and ($whiteListedRGs -contains $this.ResourceContext.ResourceGroupName)){
+                $subnetsWithUDRs | Foreach-Object {
+                    $IsUDRPermitted = $true
+                    try{
+                        $routeTableResourceId = $_.RouteTable.Id
+                        $routeTable = Get-AzResource -ResourceId $routeTableResourceId -ErrorAction SilentlyContinue
+                        if($null -ne  $routeTable -and ($whiteListedRGs -contains $routeTable.ResourceGroupName) -and [Helpers]::CheckMember($routeTable,"Properties.routes")){
+                            $routes =  $routeTable.Properties.routes
+                            $routes | ForEach-Object {
+                                $addressPrefix =  $_.properties.addressPrefix
+                                $nextHopType  = $_.properties.nextHopType
+                                if(-not($addressPrefix -eq $whiteListedaddressPrefix -and $nextHopType -eq $whiteListednextHopType)){
+                                    $IsUDRPermitted = $false
+                                }
+                            }
+                        }else{
+                            $IsUDRPermitted = $false
+                        }
+                    }catch{
+                        $IsUDRPermitted = $false
+                    }
+                    if(-not $IsUDRPermitted){
+                        $nonCompliantSubnetsWithUDRs += $_
+                    }
+                }
+            }else{
+                # All UDR's are non-compliant, if resource is not in whitelisted RG
+                $nonCompliantSubnetsWithUDRs = $subnetsWithUDRs
+            }
+
+            # If there is any non-compliant UDR fail the control
+            if($null -ne $nonCompliantSubnetsWithUDRs -and ($nonCompliantSubnetsWithUDRs | Measure-Object).count -gt 0){
+                $controlResult.AddMessage([VerificationResult]::Failed, [MessageData]::new(($subnetsWithUDRs | Select-Object Name, RouteTableText)));
+                $controlResult.SetStateData("UDRs found on any Subnet of ERVNet", $subnetsWithUDRs);
+            }else{
+                $controlResult.AddMessage([VerificationResult]::Passed, [MessageData]::new("No additional UDRs found on any Subnet of ERVNet"));
+            }
+
         }
         else
         {
@@ -211,7 +269,7 @@ class ERvNet : SVTIaasBase
     {
         $nonERvNetGateways = @()
 		$hasTCPPassed = $true
-        $gateways = Get-AzureRmVirtualNetworkGateway -ResourceGroupName $this.ResourceContext.ResourceGroupName
+        $gateways = Get-AzVirtualNetworkGateway -ResourceGroupName $this.ResourceContext.ResourceGroupName
         $count = 0
         if(($null -ne $gateways) -and (($gateways | Measure-Object).count -gt 0))
         {
@@ -267,7 +325,7 @@ class ERvNet : SVTIaasBase
     {
 		$invalidlbList = @()
         $hasTCPPassed = $true
-        $ilbs = Get-AzureRmLoadBalancer
+        $ilbs = Get-AzLoadBalancer
         $count = 0
 
         if($null -ne $ilbs -and ($ilbs|Measure-Object).count -gt 0)
@@ -287,7 +345,7 @@ class ERvNet : SVTIaasBase
                                 {
                                     $subParts = $frontEndIpConfig.PublicIpAddress.Id.Split('/')
                                     $publicIpResourceName = $subParts[$subParts.Length-1]
-                                    $pubResourceName = Get-AzureRmPublicIpAddress -Name $publicIpResourceName -ResourceGroupName $this.ResourceContext.ResourceGroupName
+                                    $pubResourceName = Get-AzPublicIpAddress -Name $publicIpResourceName -ResourceGroupName $this.ResourceContext.ResourceGroupName
                                     $hasTCPPassed = $false
 
 									$invalidlb = New-Object System.Object
@@ -326,7 +384,7 @@ class ERvNet : SVTIaasBase
 
 	hidden [ControlResult] CheckOnlyNetworkResourceExist([ControlResult] $controlResult)
     {
-        $resources = [array](Get-AzureRmResource -ResourceGroupName $this.ResourceContext.ResourceGroupName)
+        $resources = [array](Get-AzResource -ResourceGroupName $this.ResourceContext.ResourceGroupName)
 
         if($null -ne $resources)
         {
@@ -353,7 +411,7 @@ class ERvNet : SVTIaasBase
 
 	hidden [ControlResult] CheckResourceLockConfigured([ControlResult] $controlResult)
     {
-        $locks = [array](Get-AzureRMResourceLock -ResourceGroupName $this.ResourceContext.ResourceGroupName -AtScope)
+        $locks = [array](Get-AzResourceLock -ResourceGroupName $this.ResourceContext.ResourceGroupName -AtScope)
 
         if($null -eq $locks -or $locks.Length -le 0)
         {
@@ -377,47 +435,71 @@ class ERvNet : SVTIaasBase
 	hidden [ControlResult] CheckARMPolicyConfigured([ControlResult] $controlResult)
     {
 		$controlSettings = $this.LoadServerConfigFile("Subscription.ARMPolicies.json");
-
-        $hasTCPPassed = $true
-        $UserTags = @()
-        $UserTags += "mandatory"
-        $UserTags += "sdo"
         $output = @()
+        $missingPolicies = @()
+        $subscriptionId = $this.SubscriptionContext.SubscriptionId 
+        $resourceGroupName = $this.ResourceContext.ResourceGroupName
         if($null -ne $controlSettings -and [Helpers]::CheckMember($controlSettings,"Policies"))
         {
             $policies = $controlSettings.Policies
-            $policies | ForEach-Object{
-                Set-Variable -Name pol -Scope Local -Value $_
-                Set-Variable -Name polEnabled -Scope Local -Value $_.enabled
-                Set-Variable -Name policyDefinitionName -Scope Local -Value $_.policyDefinitionName
-                Set-Variable -Name tags -Scope Local -Value $_.tags
-                $haveMatchedTags = (($tags | Where-Object { $UserTags.Contains($_.Trim().ToLower()) }).Length -gt 0)
-                if($polEnabled -and $haveMatchedTags)
-                {
-                    $mandatoryPolicies = [array](Get-AzureRMPolicyAssignment | Where-Object {$_.Name -eq $policyDefinitionName})
-                    if($null -eq $mandatoryPolicies -or $mandatoryPolicies.Length -le 0)
-                    {
-                        $hasTCPPassed = $false
-                        $output += $pol
+            $enabledPolicies = @()
+            $sdoPolicies = @()
+            #Filter to get only enabled and sdo tagged policy
+            $enabledPolicies += $policies | Where-Object {( ($_.tags.Trim().ToLower().Contains("sdo")) -and ($_.enabled) )}
+            #Filter to get policy applicable for current ErvNet RG
+            if(($enabledPolicies | Measure-Object).Count -gt 0){
+                $enabledPolicies | ForEach-Object {
+                    $ErvNetRGPatterns = ((($_.applicableForRGs | ForEach-Object {'^' + [regex]::escape($_) + '$' }) -join '|') ) -replace '[\\]',''
+                    if(($this.ResourceContext.ResourceGroupName.ToLower() -imatch $ErvNetRGPatterns)){
+                        $sdoPolicies += $_
                     }
                 }
             }
+
+            if(($sdoPolicies | Measure-Object).Count -gt 0)
+            {
+                $configuredPolicies = Get-AzPolicyAssignment -IncludeDescendent
+                $sdoPolicies | ForEach-Object{
+                    Set-Variable -Name pol -Scope Local -Value $_
+                    Set-Variable -Name policyDefinitionName -Scope Local -Value $_.policyDefinitionName
+                    Set-Variable -Name tags -Scope Local -Value $_.tags
+                    $policyScope =  ( $_.scope -replace "subscriptionId",$subscriptionId ) -replace "resourceGroupName" , $resourceGroupName
+                      
+                    $foundPolicies = [array]($configuredPolicies | Where-Object {$_.Name -like $policyDefinitionName -and $_.properties.scope -eq $policyScope})
+                
+                    if($null -ne $foundPolicies)
+                    {
+                        if($foundPolicies.Length -gt 0)
+                        {
+                            $output += $pol
+                        }
+                        else{
+                            $missingPolicies += $pol
+                        }
+                    }
+                    else{
+                        $missingPolicies += $pol
+                    }
+                    
+                }
+
+            }
+            else
+            {
+                $controlResult.AddMessage([VerificationResult]::Passed,[MessageData]::new("No mandatory ARM policies required to be configured on the subscription because of ERNetwork."));
+            }
+            
+        }
+        if(($missingPolicies | Measure-Object).Count -le 0)
+        {
+            $controlResult.VerificationResult = [VerificationResult]::Passed;
         }
         else
-		{
-			$controlResult.AddMessage([MessageData]::new("No mandatory ARM policies required to be configured on the subscription because of ERNetwork."));
-        }
-
-        if(-not $hasTCPPassed)
         {
-			$controlResult.SetStateData("Missing mandatory policies", $output);
-			$controlResult.AddMessage([VerificationResult]::Failed, [MessageData]::new("Some of the mandatory policies are missing which are demanded by the control tags - ["+ $UserTags +"]", $output ));
+            $missingPolicies = $missingPolicies | select-object "policyDefinitionName"
+			$controlResult.SetStateData("Missing mandatory policies", $missingPolicies);
+			$controlResult.AddMessage([VerificationResult]::Failed, [MessageData]::new("Following mandatory policies are missing which are demanded by the control tags:",$missingPolicies));
         }
-        else
-        {
-			$controlResult.VerificationResult = [VerificationResult]::Passed;
-        }
-
         return $controlResult;
     }
 }

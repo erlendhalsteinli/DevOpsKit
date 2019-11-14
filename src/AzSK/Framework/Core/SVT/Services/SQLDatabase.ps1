@@ -4,17 +4,11 @@ using namespace Microsoft.Azure.Commands.Sql.TransparentDataEncryption.Model
 using namespace Microsoft.Azure.Commands.Sql.ThreatDetection.Model
 
 Set-StrictMode -Version Latest
-class SQLDatabase: SVTBase
+class SQLDatabase: AzSVTBase
 {
     hidden [PSObject] $ResourceObject;
     hidden [PSObject[]] $SqlDatabases = $null;
 	hidden [PSObject[]] $SqlFirewallDetails = $null;
-
-    SQLDatabase([string] $subscriptionId, [string] $resourceGroupName, [string] $resourceName):
-        Base($subscriptionId, $resourceGroupName, $resourceName)
-    {
-        $this.GetResourceObject();
-    }
 
 	SQLDatabase([string] $subscriptionId, [SVTResource] $svtResource):
         Base($subscriptionId, $svtResource)
@@ -25,7 +19,7 @@ class SQLDatabase: SVTBase
     hidden [PSObject] GetResourceObject()
     {
         if (-not $this.ResourceObject) {
-            $this.ResourceObject =   Get-AzureRmResource -ResourceName $this.ResourceContext.ResourceName -ResourceGroupName $this.ResourceContext.ResourceGroupName
+            $this.ResourceObject =   $this.ResourceContext.ResourceDetails
 
             if(-not $this.ResourceObject)
             {
@@ -42,7 +36,7 @@ class SQLDatabase: SVTBase
 			try
 			{
 				$this.SqlDatabases = @();
-				$this.SqlDatabases += Get-AzureRmSqlDatabase -ResourceGroupName $this.ResourceContext.ResourceGroupName -ServerName $this.ResourceContext.ResourceName -ErrorAction Stop |
+				$this.SqlDatabases += Get-AzSqlDatabase -ResourceGroupName $this.ResourceContext.ResourceGroupName -ServerName $this.ResourceContext.ResourceName -ErrorAction Stop |
 								Where-Object { $_.DatabaseName -ne "master" }
 				$this.ChildResourceNames = @();
 				$this.SqlDatabases | ForEach-Object {
@@ -70,9 +64,9 @@ class SQLDatabase: SVTBase
 		return $result;
 	}
 
-    hidden [ControlResult] CheckSqlServerVersionUpgrade([ControlResult] $controlResult)
+    <#hidden [ControlResult] CheckSqlServerVersionUpgrade([ControlResult] $controlResult)
     {
-        $upgradeStatus = Get-AzureRmSqlServerUpgrade -ResourceGroupName  $this.ResourceContext.ResourceGroupName -ServerName $this.ResourceContext.ResourceName -ErrorAction Stop
+        $upgradeStatus = Get-AzSqlServerUpgrade -ResourceGroupName  $this.ResourceContext.ResourceGroupName -ServerName $this.ResourceContext.ResourceName -ErrorAction Stop
 
         $controlResult.AddMessage([MessageData]::new("Current status of SQL Database server upgrade -",
 			                                         $upgradeStatus));
@@ -87,16 +81,16 @@ class SQLDatabase: SVTBase
         }
 
         return $controlResult;
-    }
+    }#>
 
     hidden [ControlResult] CheckSqlServerAuditing([ControlResult] $controlResult)
     {
-        $serverAudit = Get-AzureRmSqlServerAuditing -ResourceGroupName $this.ResourceContext.ResourceGroupName -ServerName $this.ResourceContext.ResourceName -ErrorAction Stop
+        $serverAudit = Get-AzSqlServerAudit -ResourceGroupName $this.ResourceContext.ResourceGroupName -ServerName $this.ResourceContext.ResourceName -ErrorAction Stop
 
 		$controlResult.AddMessage([MessageData]::new("Current audit status for SQL server [$($this.ResourceContext.ResourceName)]:", $serverAudit))
 
 		if($null -ne $serverAudit){
-				$isCompliant = (($serverAudit.AuditState -eq [AuditStateType]::Enabled) `
+				$isCompliant = (($serverAudit.BlobStorageTargetState -eq [AuditStateType]::Enabled) `
                                -and ($serverAudit.RetentionInDays -eq $this.ControlSettings.SqlServer.AuditRetentionPeriod_Min -or $serverAudit.RetentionInDays -eq $this.ControlSettings.SqlServer.AuditRetentionPeriod_Forever))
 
 				if ($isCompliant){
@@ -134,7 +128,7 @@ class SQLDatabase: SVTBase
             $this.SqlDatabases | ForEach-Object {
 				$dbName = $_.DatabaseName;
 				try {
-					$tdeStatus = Get-AzureRmSqlDatabaseTransparentDataEncryption `
+					$tdeStatus = Get-AzSqlDatabaseTransparentDataEncryption `
 					-ResourceGroupName $this.ResourceContext.ResourceGroupName `
 					-ServerName $this.ResourceContext.ResourceName `
 					-DatabaseName $dbName `
@@ -151,7 +145,7 @@ class SQLDatabase: SVTBase
 				}
 				catch {
 					$atleastOneFailed = $true
-					$errorDB += $_.DatabaseName
+					$errorDB += $dbName
 				}
 				
 			} #End of ForEach-Object
@@ -188,7 +182,7 @@ class SQLDatabase: SVTBase
 
     hidden [ControlResult] CheckSqlServerADAdmin([ControlResult] $controlResult)
     {
-        $adAdmin = Get-AzureRmSqlServerActiveDirectoryAdministrator -ResourceGroup $this.ResourceContext.ResourceGroupName -Server $this.ResourceContext.ResourceName.ToLower() -ErrorAction Stop
+        $adAdmin = Get-AzSqlServerActiveDirectoryAdministrator -ResourceGroup $this.ResourceContext.ResourceGroupName -Server $this.ResourceContext.ResourceName.ToLower() -ErrorAction Stop
 
         $controlResult.AddMessage([MessageData]::new("Current status of Active Directory Admin for ["+ $this.ResourceContext.ResourceName +"] is"));
 
@@ -210,15 +204,16 @@ class SQLDatabase: SVTBase
         $isCompliant = $false
 
 		#First check if the server auditing is enabled, without which TD does not work
-	    $serverAudit = Get-AzureRmSqlServerAuditing -ResourceGroupName $this.ResourceContext.ResourceGroupName -ServerName $this.ResourceContext.ResourceName.ToLower() -ErrorAction Stop
+	    $serverAudit = Get-AzSqlServerAudit -ResourceGroupName $this.ResourceContext.ResourceGroupName -ServerName $this.ResourceContext.ResourceName.ToLower() -ErrorAction Stop
 
 		if($null -ne $serverAudit){
 			#Check if Audit is Enabled 
-				if($serverAudit.AuditState -eq [AuditStateType]::Enabled){
-						$serverThreat = Get-AzureRmSqlServerThreatDetectionPolicy `
+				if($serverAudit.BlobStorageTargetState -eq [AuditStateType]::Enabled){
+					# TODO: We are temporarily suppressing the alias deprecation warning message given by the below Az.SQL cmdlet.
+						$serverThreat = Get-AzSqlServerAdvancedThreatProtectionSettings `
 									-ResourceGroupName $this.ResourceContext.ResourceGroupName `
 									-ServerName $this.ResourceContext.ResourceName.ToLower() `
-									-ErrorAction Stop
+									-ErrorAction Stop -WarningAction SilentlyContinue
 
 						$controlResult.AddMessage([MessageData]::new("Current threat detection status for SQL server ["+ $this.ResourceContext.ResourceName +"] is",
 															($serverThreat)));
@@ -349,7 +344,7 @@ class SQLDatabase: SVTBase
 				$dbName = $_.DatabaseName;
 				try
 				{
-					$dbMaskingPolicy = Get-AzureRmSqlDatabaseDataMaskingPolicy `
+					$dbMaskingPolicy = Get-AzSqlDatabaseDataMaskingPolicy `
 									-ResourceGroupName $this.ResourceContext.ResourceGroupName `
 									-ServerName $this.ResourceContext.ResourceName `
 									-DatabaseName $dbName
@@ -370,7 +365,7 @@ class SQLDatabase: SVTBase
 						}
 					}
 					catch {
-						$errorDB += $_.DatabaseName
+						$errorDB += $dbName
 					}
 				}
 
@@ -405,15 +400,17 @@ class SQLDatabase: SVTBase
 		return $controlResult;
 	}
 
+	# TODO: This function is not being called. We can delete this function if not being used. 
 	hidden [bool] IsServerThreatDetectionEnabled(){
 			$isCompliant = $false
-			$serverAudit = Get-AzureRmSqlServerAuditing -ResourceGroupName $this.ResourceContext.ResourceGroupName -ServerName $this.ResourceContext.ResourceName -ErrorAction Stop
+			$serverAudit = Get-AzSqlServerAudit -ResourceGroupName $this.ResourceContext.ResourceGroupName -ServerName $this.ResourceContext.ResourceName -ErrorAction Stop
 			if($null -ne $serverAudit){
-				if($serverAudit.AuditState -eq 'Enabled'){
-							$serverThreat = Get-AzureRmSqlServerThreatDetectionPolicy `
+				if($serverAudit.BlobStorageTargetState -eq 'Enabled'){
+					# TODO: We are temporarily suppressing the alias deprecation warning message given by the below Az.SQL cmdlet.
+							$serverThreat = Get-AzSqlServerAdvancedThreatProtectionSettings `
                                 			-ResourceGroupName $this.ResourceContext.ResourceGroupName `
                                 			-ServerName $this.ResourceContext.ResourceName `
-                                			-ErrorAction Stop
+                                			-ErrorAction Stop -WarningAction SilentlyContinue
 							$excludedTypeCount = ($serverThreat.ExcludedDetectionTypes | Measure-Object ).Count
 							$isCompliant =  (($serverThreat.ThreatDetectionState -eq [ThreatDetectionStateType]::Enabled) `
                                 			-and ($excludedTypeCount -eq 0) `
@@ -426,7 +423,7 @@ class SQLDatabase: SVTBase
 	hidden 	[PSObject[]] GetSqlServerFirewallRules()
 	{
 		if ($null -eq $this.SqlFirewallDetails) {
-            $this.SqlFirewallDetails = Get-AzureRmSqlServerFirewallRule -ResourceGroupName $this.ResourceContext.ResourceGroupName  -ServerName $this.ResourceContext.ResourceName
+            $this.SqlFirewallDetails = Get-AzSqlServerFirewallRule -ResourceGroupName $this.ResourceContext.ResourceGroupName  -ServerName $this.ResourceContext.ResourceName
         }
         return $this.SqlFirewallDetails;
 	}

@@ -11,7 +11,7 @@
         "Automated": "Yes",
         "MethodName": "CheckRBACAccess",
         "Rationale": "Granting minimum access by leveraging RBAC feature ensures that users are granted just enough permissions to perform their tasks. This minimizes exposure of the resources in case of user/service account compromise.",
-        "Recommendation": "Remove any excessive privileges granted on the App Service. Run command: Remove-AzureRmRoleAssignment -SignInName '<SignInName>' -Scope '<Scope>' RoleDefinitionName '<RoleDefinitionName>'. Run 'Get-Help Remove-AzureRmRoleAssignment -full' for more help.",
+        "Recommendation": "Remove any excessive privileges granted on the App Service. Run command: Remove-AzRoleAssignment -SignInName '<SignInName>' -Scope '<Scope>' RoleDefinitionName '<RoleDefinitionName>'. Run 'Get-Help Remove-AzRoleAssignment -full' for more help.",
         "Tags": [
           "SDL",
           "TCP",
@@ -19,7 +19,9 @@
           "AuthZ",
           "RBAC",
           "AppService",
-          "FunctionApp"
+          "FunctionApp",
+          "Windows",
+          "Linux"
         ],
         "Enabled": true
       },
@@ -31,14 +33,16 @@
         "Automated": "Yes",
         "MethodName": "CheckAppServiceCustomDomainWithSSLConfig",
         "Rationale": "Use of custom domain protects a web application from common attacks such as phishing, session hijacking and other DNS-related attacks.",
-        "Recommendation": "Go to Azure Portal --> your App Service --> Settings --> Custom Domains and follow the steps mentioned to configure a custom domain. Run command 'New-AzureRmWebAppSSLBinding' to enable the SSL binding for your custom domain. Run 'Get-Help New-AzureRmWebAppSSLBinding -full' for more help.",
+        "Recommendation": "Go to Azure Portal --> your App Service --> Settings --> Custom Domains and follow the steps mentioned to configure a custom domain. Run command 'New-AzWebAppSSLBinding' to enable the SSL binding for your custom domain. Run 'Get-Help New-AzWebAppSSLBinding -full' for more help.",
         "Tags": [
           "SDL",
           "TCP",
           "Automated",
           "DP",
           "AppService",
-          "FunctionApp"
+          "FunctionApp",
+          "Windows",
+          "Linux"
         ],
         "Enabled": true
       },
@@ -50,7 +54,7 @@
         "Automated": "Yes",
         "MethodName": "CheckAppServiceADAuthentication",
         "Rationale": "Using the native enterprise directory for authentication ensures that there is a built-in high level of assurance in the user identity established for subsequent access control.All Enterprise subscriptions are automatically associated with their enterprise directory (xxx.onmicrosoft.com) and users in the native directory are trusted for authentication to enterprise subscriptions.",
-        "Recommendation": "Go to Azure Portal --> your App Service --> Settings --> Authentication/Authorization --> turn on 'App Service Authentication' --> Click on 'Azure Active Directory' under Authentication Providers to configure the AAD authentication. Note: If you are implementing this control via code, then you can attest to the same and mark this as passed. Note: In case of Functions apps, AAD authentication is required only for 'Http Trigger' functions.",
+        "Recommendation": "Go to Azure Portal --> your App Service --> Settings --> Authentication/Authorization --> turn on 'App Service Authentication' --> Click on 'Azure Active Directory' under Authentication Providers to configure the AAD authentication. There will be a list of options to choose from under 'Action to take when request is not authenticated'. Please make sure that this value is not set to 'Allow Anonymous requests (no action)'. Note: If you are implementing this control via code, then you can attest to the same and mark this as passed. Note: In case of Functions apps, AAD authentication is required only for 'Http Trigger' functions.",
         "Tags": [
           "SDL",
           "TCP",
@@ -58,7 +62,9 @@
           "AuthN",
           "OwnerAccess",
           "AppService",
-          "FunctionApp"
+          "FunctionApp",
+          "Windows",
+          "Linux"
         ],
         "Enabled": true
       },
@@ -70,14 +76,16 @@
         "Automated": "No",
         "MethodName": "",
         "Rationale": "Publish profile of App Services contains deployment and FTP credentials. There are 2 risks with this. First, the credentials can get easily leaked during the various workflows involving the publish profile. Secondly, use of public profiles weakens auditability of deployment actions.",
-        "Recommendation": "No predefined role should be present in the App Service and all the custom roles must have all 'publishxml' operations added as the Non Actions, e.g. 'microsoft.web/sites/publishxml/read'.",
+        "Recommendation": "No predefined role should be present in the App Service and all the custom roles must have all 'publishxml' operations added as the Non Actions, e.g. 'microsoft.web/sites/publishxml/read'. Refer https://docs.microsoft.com/en-us/azure/app-service/faq-deployment#i-am-just-getting-started-with-app-service-web-apps-how-do-i-publish-my-code for exploring ways to securely deploy app service.",
         "Tags": [
           "SDL",
           "TCP",
           "Manual",
           "Deploy",
           "AppService",
-          "FunctionApp"
+          "FunctionApp",
+          "Windows",
+          "Linux"
         ],
         "Enabled": true
       },
@@ -96,7 +104,9 @@
           "Manual",
           "AuthZ",
           "AppService",
-          "FunctionApp"
+          "FunctionApp",
+          "Windows",
+          "Linux"
         ],
         "Enabled": true
       },
@@ -115,7 +125,9 @@
           "Manual",
           "DP",
           "AppService",
-          "FunctionApp"
+          "FunctionApp",
+          "Windows",
+          "Linux"
         ],
         "Enabled": true
       },
@@ -134,7 +146,9 @@
           "Manual",
           "DP",
           "AppService",
-          "FunctionApp"
+          "FunctionApp",
+          "Windows",
+          "Linux"
         ],
         "Enabled": true
       },
@@ -153,7 +167,9 @@
           "Manual",
           "Deploy",
           "AppService",
-          "FunctionApp"
+          "FunctionApp",
+          "Windows",
+          "Linux"
         ],
         "Enabled": true
       },
@@ -165,14 +181,16 @@
         "Automated": "Yes",
         "MethodName": "CheckAppServiceRemoteDebuggingConfiguration",
         "Rationale": "Remote debugging requires inbound ports to be opened on App Service. These ports become easy targets for compromise from various internet based attacks.",
-        "Recommendation": "Go to Azure Portal --> your App Service --> Settings --> Application Settings --> Remote Debugging --> Click on 'OFF'.",
+        "Recommendation": "Go to Azure Portal --> your App Service --> Settings --> Configuration --> General Settings --> Remote Debugging --> Click on 'OFF'.",
         "Tags": [
           "SDL",
           "TCP",
           "Automated",
           "Config",
           "AppService",
-          "FunctionApp"
+          "FunctionApp",
+          "Windows",
+          "Linux"
         ],
         "Enabled": true
       },
@@ -180,18 +198,20 @@
         "ControlID": "Azure_AppService_Config_Disable_Web_Sockets",
         "Description": "Web Sockets should be disabled for App Service",
         "Id": "AppService220",
-        "ControlSeverity": "Medium",
+        "ControlSeverity": "High",
         "Automated": "Yes",
         "MethodName": "CheckAppServiceWebSocketsConfiguration",
         "Rationale": "WebSockets protocol (WS) is vulnerable to different types of security attacks. Usage of Web Sockets with in web applications has to be carefully reviewed.",
-        "Recommendation": "Run command 'Set-AzureRmWebApp -Name '<WebAppName>' -ResourceGroupName '<RGName>' -WebSocketsEnabled `$false'. Run 'Get-Help Set-AzureRmWebApp -full' for more help. Refer: https://www.owasp.org/index.php/HTML5_Security_Cheat_Sheet#WebSockets",
+        "Recommendation": "Run command 'Set-AzWebApp -Name '<WebAppName>' -ResourceGroupName '<RGName>' -WebSocketsEnabled `$false'. Run 'Get-Help Set-AzWebApp -full' for more help. Refer: https://github.com/OWASP/CheatSheetSeries/blob/master/cheatsheets/HTML5_Security_Cheat_Sheet.md#websockets",
         "Tags": [
           "SDL",
           "Best Practice",
           "Automated",
           "Config",
           "AppService",
-          "FunctionApp"
+          "FunctionApp",
+          "Windows",
+          "Linux"
         ],
         "Enabled": true,
         "FixControl": {
@@ -207,13 +227,15 @@
         "Automated": "Yes",
         "MethodName": "CheckAppServiceAlwaysOnConfiguration",
         "Rationale": "By default, websites are unloaded if they have been idle for some period of time. However, this may not be ideal for 'high availability' requirements. Configuring 'Always On' can help prevent app services from getting timed out.",
-        "Recommendation": "Go to Azure Portal --> your App Service --> Settings --> Application Settings --> Always On --> Click on 'ON'.",
+        "Recommendation": "Go to Azure Portal --> your App Service --> Settings --> Configuration --> General Settings --> Always On --> Click on 'ON'.",
         "Tags": [
           "SDL",
           "Best Practice",
           "Automated",
           "BCDR",
-          "AppService"
+          "AppService",
+          "Windows",
+          "Linux"
         ],
         "Enabled": true
       },
@@ -225,14 +247,16 @@
         "Automated": "Yes",
         "MethodName": "CheckAppServiceDotNetFrameworkVersion",
         "Rationale": "Running on older .Net versions could mean you are not using latest security classes. Usage of such old classes and types can make your application vulnerable.",
-        "Recommendation": "Run command 'Set-AzureRmWebApp -Name '<WebAppName>' -ResourceGroupName '<RGName>' -NetFrameworkVersion 'v4.0''. Run 'Get-Help Set-AzureRmWebApp -full' for more help.",
+        "Recommendation": "Run command 'Set-AzWebApp -Name '<WebAppName>' -ResourceGroupName '<RGName>' -NetFrameworkVersion 'v4.7''. Run 'Get-Help Set-AzWebApp -full' for more help.",
         "Tags": [
           "SDL",
           "Best Practice",
           "Automated",
           "Deploy",
           "AppService",
-          "FunctionApp"
+          "FunctionApp",
+          "Windows",
+          "Linux"
         ],
         "Enabled": true,
         "FixControl": {
@@ -255,7 +279,9 @@
           "Manual",
           "Deploy",
           "AppService",
-          "FunctionApp"
+          "FunctionApp",
+          "Windows",
+          "Linux"
         ],
         "Enabled": true
       },
@@ -267,13 +293,15 @@
         "Automated": "Yes",
         "MethodName": "CheckAppServiceInstanceCount",
         "Rationale": "App Service deployed on multiple instances ensures that the App Service remains available even if an instance is down.",
-        "Recommendation": "Run command 'Set-AzureRmAppServicePlan -Name '<AppServicePlanName>' -ResourceGroupName '<RGName>' -NumberofWorkers '<NumberofInstances>''. Run 'Get-Help Set-AzureRmAppServicePlan -full' for more help.",
+        "Recommendation": "Run command 'Set-AzAppServicePlan -Name '<AppServicePlanName>' -ResourceGroupName '<RGName>' -NumberofWorkers '<NumberofInstances>''. Run 'Get-Help Set-AzAppServicePlan -full' for more help.",
         "Tags": [
           "SDL",
           "TCP",
           "Automated",
           "BCDR",
-          "AppService"
+          "AppService",
+          "Windows",
+          "Linux"
         ],
         "Enabled": true,
         "FixControl": {
@@ -289,14 +317,16 @@
         "Automated": "Yes",
         "MethodName": "CheckAppServiceBackupConfiguration",
         "Rationale": "Enabling backup on App Service ensures that there is always a previous snapshot of App Service data that can be leveraged towards recovery scenarios.",
-        "Recommendation": "Run command 'Edit-AzureRmWebAppBackupConfiguration -FrequencyInterval '1' -FrequencyUnit 'Day' -RetentionPeriodInDays '<0 or 365>' -StartTime '<TimeLessThanOrEqualToCurrentTime>' -Name '<WebAppName>' -ResourceGroupName '<RGName>' -StorageAccountUrl '<StorageAccountUrl>' -KeepAtLeastOneBackup'. Run 'Get-Help Edit-AzureRmWebAppBackupConfiguration -full' for more help.",
+        "Recommendation": "Run command 'Edit-AzWebAppBackupConfiguration -FrequencyInterval '1' -FrequencyUnit 'Day' -RetentionPeriodInDays '<0 or 365>' -StartTime '<TimeLessThanOrEqualToCurrentTime>' -Name '<WebAppName>' -ResourceGroupName '<RGName>' -StorageAccountUrl '<StorageAccountUrl>' -KeepAtLeastOneBackup'. Run 'Get-Help Edit-AzWebAppBackupConfiguration -full' for more help.",
         "Tags": [
           "SDL",
           "Best Practice",
           "Automated",
           "BCDR",
           "OwnerAccess",
-          "AppService"
+          "AppService",
+          "Windows",
+          "Linux"
         ],
         "Enabled": true
       },
@@ -308,14 +338,16 @@
         "Automated": "Yes",
         "MethodName": "CheckAppServiceDiagnosticLogsConfiguration",
         "Rationale": "Auditing enables log collection of important system events pertinent to security. Regular monitoring of audit logs can help to detect any suspicious and malicious activity early and respond in a timely manner.",
-        "Recommendation": "Run command 'Set-AzureRmWebApp -Name '<WebAppName>' -ResourceGroupName '<RGName>' -DetailedErrorLoggingEnabled `$true -HttpLoggingEnabled `$true -RequestTracingEnabled `$true'. Run 'Get-Help Set-AzureRmWebApp -full' for more help.",
+        "Recommendation": "Run command 'Set-AzWebApp -Name '<WebAppName>' -ResourceGroupName '<RGName>' -DetailedErrorLoggingEnabled `$true -HttpLoggingEnabled `$true -RequestTracingEnabled `$true'. Run 'Get-Help Set-AzWebApp -full' for more help.",
         "Tags": [
           "SDL",
           "TCP",
           "Automated",
           "Audit",
           "AppService",
-          "FunctionApp"
+          "FunctionApp",
+          "Windows",
+          "Linux"
         ],
         "Enabled": true,
         "FixControl": {
@@ -339,7 +371,9 @@
           "Best Practice",
           "Manual",
           "BCDR",
-          "AppService"
+          "AppService",
+          "Windows",
+          "Linux"
         ],
         "Enabled": true
       },
@@ -351,14 +385,16 @@
         "Automated": "Yes",
         "MethodName": "CheckAppServiceHttpCertificateSSL",
         "Rationale": "Use of HTTPS ensures server/service authentication and protects data in transit from network layer eavesdropping attacks.",
-        "Recommendation": "Run command 'Set-AzureRmWebApp -Name '<WebAppName>' -ResourceGroupName '<RGName>' -HttpsOnly `$true. Run 'Get-Help Set-AzureRmWebApp -full' for more help.",
+        "Recommendation": "Run command 'Set-AzWebApp -Name '<WebAppName>' -ResourceGroupName '<RGName>' -HttpsOnly `$true. Run 'Get-Help Set-AzWebApp -full' for more help.",
         "Tags": [
           "SDL",
           "TCP",
           "Automated",
           "DP",
           "AppService",
-          "FunctionApp"
+          "FunctionApp",
+          "Windows",
+          "Linux"
         ],
         "Enabled": true,
         "FixControl": {
@@ -375,7 +411,7 @@
         "Automated": "Yes",
         "MethodName": "CheckAppServiceLoadCertAppSettings",
         "Rationale": "Using '*' for this parameter means that all certificates will get uploaded to the VM running the website. This will most likely lead to abuse of the principle of least privilege as it is unlikely that the site needs access to all certificates at runtime.",
-        "Recommendation": "Go to Azure Portal --> your App Service --> Settings --> Application Settings --> App Settings --> Check for 'WEBSITE_LOAD_CERTIFICATES' key and make sure that value is not set to '*'. Instead choose the specific certificate that is required by the App Service. Refer https://msftplayground.com/2016/11/using-certificates-azure-app-services/ for more details.",
+        "Recommendation": "Go to Azure Portal --> your App Service --> Settings --> Configuration --> Application Settings --> Check for 'WEBSITE_LOAD_CERTIFICATES' key and make sure that value is not set to '*'. Instead choose the specific certificate that is required by the App Service. Refer https://msftplayground.com/2016/11/using-certificates-azure-app-services/ for more details.",
         "Tags": [
           "SDL",
           "TCP",
@@ -383,7 +419,9 @@
           "DP",
           "AppService",
           "FunctionApp",
-          "OwnerAccess"
+          "OwnerAccess",
+          "Windows",
+          "Linux"
         ],
         "Enabled": true
       },
@@ -395,13 +433,15 @@
         "ControlSeverity": "Medium",
         "Automated": "No",
         "MethodName": "",
-        "Recommendation": "Refer https://docs.microsoft.com/en-us/azure/azure-functions/functions-bindings-http-webhook#working-with-keys for details on Host keys in Functions app.",
+        "Recommendation": "Refer https://docs.microsoft.com/en-us/azure/azure-functions/functions-bindings-http-webhook#authorization-keys for details on Host keys in Functions app.",
         "Tags": [
           "SDL",
           "TCP",
           "Manual",
           "DP",
-          "FunctionApp"
+          "FunctionApp",
+          "Windows",
+          "Linux"
         ],
         "Enabled": true,
         "Rationale": "Periodic key/password rotation is a good security hygiene practice as, over time, it minimizes the likelihood of data loss/compromise which can arise from key theft/brute forcing/recovery attacks."
@@ -413,13 +453,15 @@
         "ControlSeverity": "Medium",
         "Automated": "No",
         "MethodName": "",
-        "Recommendation": "Refer https://docs.microsoft.com/en-us/azure/azure-functions/functions-bindings-http-webhook#working-with-keys for details on Host keys in Functions app.",
+        "Recommendation": "Refer https://docs.microsoft.com/en-us/azure/azure-functions/functions-bindings-http-webhook#authorization-keys for details on Host keys in Functions app.",
         "Tags": [
           "SDL",
           "TCP",
           "Manual",
           "DP",
-          "FunctionApp"
+          "FunctionApp",
+          "Windows",
+          "Linux"
         ],
         "Enabled": true,
         "Rationale": "Host Keys grant full access to all the functions within a function app. Not sharing this key with individual clients ensures that clients are granted just enough permissions to invoke a particular function"
@@ -439,7 +481,9 @@
           "Config",
           "AuthZ",
           "OwnerAccess",
-          "FunctionApp"
+          "FunctionApp",
+          "Windows",
+          "Linux"
           ],
         "Enabled": true,
         "Rationale": "Use 'Function' authorization level to ensure that users with minimum of function keys should only be able to invoke the function. This is in accordance with the principle of least privilege."
@@ -458,7 +502,9 @@
           "TCP",
           "Automated",
           "Config",
-          "FunctionApp"
+          "FunctionApp",
+          "Windows",
+          "Linux"
         ],
         "Enabled": true,
         "Rationale": "Using 'Read Only' mode ensures that source code is changes come in via a CICD pipeline and not directly through portal. This ensures that code changes are properly audited."
@@ -476,7 +522,9 @@
           "TCP",
           "Manual",
           "DP",
-          "FunctionApp"
+          "FunctionApp",
+          "Windows",
+          "Linux"
         ],
         "Enabled": true,
         "Rationale": "Different function keys for individual clients promotes separation of concerns. It also makes revocation easier to manage in the event of a compromise of one client."
@@ -496,7 +544,9 @@
           "DP",
           "AppService",
           "FunctionApp",
-          "OwnerAccess"
+          "OwnerAccess",
+          "Windows",
+          "Linux"
         ],
         "Enabled": true,
         "Rationale": "CORS enables applications running under one domain to access a resource under another domain. Using '*' (allow all) for CORS setting means that an application running under any domain can have access to your application's resources and data. Restricting allowed origins to the specific set that needs access aligns with the principle of least privilege."
@@ -514,7 +564,9 @@
           "TCP",
           "Config",
           "AppService",
-          "Manual"
+          "Manual",
+          "Windows",
+          "Linux"
         ],
         "Enabled": true,
         "Rationale": "Alert rules for unauthorized requests enable you to detect any suspicious and malicious activity early enough."
@@ -526,7 +578,7 @@
         "ControlSeverity": "Medium",
         "Automated": "Yes",
         "MethodName": "CheckAppServiceMsiEnabled",
-        "Recommendation": "Go to Azure Portal --> your App Service --> Settings --> Managed Service Identity --> Register with AAD --> ON",
+        "Recommendation": "Go to Azure Portal --> your App Service --> Settings --> Identity --> System assigned --> ON",
         "Tags": [
           "SDL",
           "TCP",
@@ -534,7 +586,9 @@
           "Config",
           "AppService",
           "FunctionApp",
-          "OwnerAccess"
+          "OwnerAccess",
+          "Windows",
+          "Linux"
         ],
         "Enabled": true,
         "Rationale": "Managed Service Identity (MSI) allows your app to easily access other AAD-protected resources such as Azure Key Vault. The identity is managed by the Azure platform and eliminates the need to provision/manage/rotate any secrets thus reducing the overall risk. "
@@ -547,16 +601,100 @@
         "Automated": "Yes",
         "MethodName": "CheckFunctionsAppHttpCertificateSSL",
         "Rationale": "Use of HTTPS ensures server/service authentication and protects data in transit from network layer eavesdropping attacks.",
-        "Recommendation": "Run command 'Set-AzureRmResource -ResourceName '<WebAppName>' -ResourceGroupName '<RGName>' -ResourceType 'Microsoft.Web/sites' -Properties @{httpsOnly='true'} -Force '. Run 'Get-Help Set-AzureRmResource -full' for more help. Note:'HttpsOnly' is required only for 'Http Trigger' functions.",
+        "Recommendation": "Run command 'Set-AzResource -ResourceName '<WebAppName>' -ResourceGroupName '<RGName>' -ResourceType 'Microsoft.Web/sites' -Properties @{httpsOnly='true'} -Force '. Run 'Get-Help Set-AzResource -full' for more help. Note:'HttpsOnly' is required only for 'Http Trigger' functions.",
         "Tags": [
           "SDL",
           "TCP",
           "Automated",
           "DP",
           "OwnerAccess",
-          "FunctionApp"
+          "FunctionApp",
+          "Windows",
+          "Linux"
         ],
        "Enabled": true
+      },
+      {
+        "ControlID": "Azure_AppService_DP_Use_Approved_TLS_Version",
+        "Description": "Use approved version of TLS for the App Service",
+        "Id": "AppService420",
+        "ControlSeverity": "Medium",
+        "Automated": "Yes",
+        "MethodName": "CheckAppServiceTLSVersion",
+        "Recommendation": "Go to Azure Portal --> your App Service --> Settings --> TLS/SSL --> Minimum TLS version --> set to org approved version (see detailed logs).",
+        "Tags": [
+          "SDL",
+          "TCP",
+          "Automated",
+          "DP",
+          "AppService",
+          "FunctionApp",
+          "Windows",
+          "Linux"
+        ],
+        "Enabled": true,
+        "Rationale": "TLS provides privacy and data integrity between client and server. Using approved TLS version significantly reduces risks from security design issues and security bugs that may be present in older versions."
+      }, 
+      {
+        "ControlID": "Azure_AppService_DP_Verify_Installed_Extensions",
+        "Description": "Extensions installed on a App Service should be carefully reviewed",
+        "Id": "AppService430",
+        "ControlSeverity": "Medium",
+        "Automated": "Yes",
+        "MethodName": "CheckAppServiceInstalledExtensions",
+        "Recommendation": "Go to Azure Portal --> your App Service --> Development Tools --> Extensions --> Verify installed extensions.",
+        "Tags": [
+          "SDL",
+          "TCP",
+          "Automated",
+          "DP",
+          "AppService",
+          "FunctionApp",
+          "Windows"
+        ],
+        "Enabled": true,
+        "Rationale": "Each extension is something like a plugin that adds functionality to your App Service. Installing unknown/unverified extensions can be dangerous as some third party extensions may have vulnerabilities which introduce unnecessary avenues for attack."
+      },  
+      {
+        "ControlID": "Azure_AppService_AuthZ_Configure_IP_Restrictions",
+        "Description": "Setup IP-based access restrictions for App Service if feasible",
+        "Id": "AppService440",
+        "ControlSeverity": "Medium",
+        "Automated": "Yes",
+        "MethodName": "CheckAppServiceAccessRestriction" ,
+        "Recommendation": "Consider using IP-based access restrictions for App Service if feasible. Steps: Go to Azure Portal --> your App Service --> Networking --> Access Restrictions --> Configure Access Restrictions --> Add/Verify access restriction rule for app and scm site. For more information, refer: https://docs.microsoft.com/en-us/azure/app-service/app-service-ip-restrictions",
+        "Tags": [
+          "SDL",
+          "TCP",
+          "Automated",
+          "DP",
+          "AppService",
+          "FunctionApp",
+          "Windows",
+          "Linux"
+        ],
+        "Enabled": true,
+        "Rationale": "Using the IP/VNet subnet rules based access restriction ensures that access to the data or the service is restricted to a specific set of IPs. NOTE: While this control does provide an extra layer of access control protection, it may not always be feasible to implement in all scenarios."
+      },  
+      {
+        "ControlID": "Azure_AppService_DP_Review_CORS_Request_Credential",
+        "Description": "Review use of credentials in CORS request for App Service",
+        "Id": "AppService450",
+        "ControlSeverity": "Medium",
+        "Automated": "Yes",
+        "MethodName": "CheckAppServiceCORSCredential",
+        "Recommendation": "Go to Azure Portal --> your App Service --> API --> CORS --> Request Credentials --> Review if you need to enable 'Access-Control-Allow-Credentials'. Note: No action is needed if you are not using CORS for your app.",
+        "Tags": [
+          "SDL",
+          "TCP",
+          "Automated",
+          "DP",
+          "AppService",
+          "FunctionApp",
+          "Windows"
+        ],
+        "Enabled": true,
+        "Rationale": "CORS enables applications running under one domain to access a resource under another domain. Allowing cross-origin credentials is a security risk. A website at another domain can send a signed-in user's credentials to the app on the user's behalf without the user's knowledge."
       }
      
     ]

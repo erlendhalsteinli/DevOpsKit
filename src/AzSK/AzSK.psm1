@@ -1,10 +1,11 @@
 ﻿Set-StrictMode -Version Latest
-Write-Host "Importing AzureRM modules. This may take a while..." -ForegroundColor Yellow
-Import-Module AzureRM.Profile -RequiredVersion 5.5.1
+Write-Host "Importing Az modules. This may take a while..." -ForegroundColor Yellow
+Import-Module Az.Accounts -RequiredVersion 1.6.0 -WarningAction SilentlyContinue
 
 . $PSScriptRoot\Framework\Framework.ps1
 
-@("$PSScriptRoot\SVT", "$PSScriptRoot\AlertMonitoring", "$PSScriptRoot\SubscriptionSecurity", "$PSScriptRoot\ContinuousAssurance" , "$PSScriptRoot\AzSKInfo", "$PSScriptRoot\PolicySetup", "$PSScriptRoot\ARMChecker") |
+
+@("$PSScriptRoot\SVT", "$PSScriptRoot\AlertMonitoring", "$PSScriptRoot\SubscriptionSecurity", "$PSScriptRoot\ContinuousAssurance" , "$PSScriptRoot\AzSKInfo", "$PSScriptRoot\PolicySetup", "$PSScriptRoot\ARMChecker","$PSScriptRoot\PIM","$PSScriptRoot\CredHygiene", "$PSScriptRoot\InClusterCA") |
     ForEach-Object {
     (Get-ChildItem -Path $_ -Recurse -File -Include "*.ps1") |
         ForEach-Object {
@@ -47,7 +48,7 @@ function Get-AzSKAccessToken {
 	{
 		try 
 		{
-			[Helpers]::GetAccessToken($ResourceAppIdURI, $TenantId);		
+			[ContextHelper]::GetAccessToken($ResourceAppIdURI, $TenantId);		
 		}
 		catch 
 		{
@@ -76,7 +77,7 @@ function Get-AzSKSupportedResourceTypes {
 	{
 		try 
 		{
-			[SVTMapping]::Mapping | Select-Object -Property ResourceTypeName, ResourceType | Sort-Object -Property ResourceTypeName;
+			[SVTMapping]::Mapping | Where-Object { $_.ResourceTypeName} | Select-Object -Property ResourceTypeName, ResourceType | Sort-Object -Property ResourceTypeName;
 		}
 		catch 
 		{
@@ -103,7 +104,9 @@ function Set-AzSKPolicySettings {
 	.PARAMETER AutoUpdateCommand
 			Provide org install URL
 	.PARAMETER AutoUpdate
-			Toggle the auto-update feature
+            Toggle the auto-update feature
+    	.PARAMETER DisableOrgPolicyCheckForSession
+	    Disable org-policy check for current session
 	
 	.LINK
 	https://aka.ms/azskossdocs
@@ -111,10 +114,14 @@ function Set-AzSKPolicySettings {
 	#>
     Param(
         [Parameter(Mandatory = $false, HelpMessage = "Provide the Online Policy Store URI")]
-        [Alias("LocalOrgPolicyFolderPath")]
         [string]
 		[Alias("opu")]
         $OnlinePolicyStoreUrl,
+
+        [Parameter(Mandatory = $false, HelpMessage = "Provide the local policy folder path")]
+        [string]
+		[Alias("lopf")]
+        $LocalOrgPolicyFolderPath,
 
         [Parameter(Mandatory = $false, HelpMessage = "Provide the flag to enable online policy")]
         [switch]
@@ -148,16 +155,29 @@ function Set-AzSKPolicySettings {
 
 		[Parameter(Mandatory = $true, ParameterSetName = "CACentralMode")]
 		[switch]
-        $EnableCentralScanMode
+        $EnableCentralScanMode,
+
+        [Parameter(Mandatory = $false, HelpMessage = "Provide the flag to disable org-policy check for current session")]
+        [switch]
+        [Alias("dopc")]
+        $DisableOrgPolicyCheckForSession
     )
     Begin {
         [CommandHelper]::BeginCommand($PSCmdlet.MyInvocation);
-        [ListenerHelper]::RegisterListeners();
+        [AzListenerHelper]::RegisterListeners();
     }
     Process {
         try {
 
-			$azskSettings = [ConfigurationManager]::GetLocalAzSKSettings();
+            # This setting will disable the mandatory org-policy check for azsk cmdlets in current session. To enable this policy check, use a fresh PS session.
+	    # This is independent of AzSKSettings.json file.
+            if ($DisableOrgPolicyCheckForSession) {
+                [CommandHelper]::Mapping | ForEach-Object {
+                    $_.IsOrgPolicyMandatory = $false
+                }
+            }
+
+	    $azskSettings = [ConfigurationManager]::GetLocalAzSKSettings();
             if (-not [string]::IsNullOrWhiteSpace($OnlinePolicyStoreUrl)) {
                 try {
                     $url = [System.Net.WebRequest]::Create($OnlinePolicyStoreUrl)
@@ -174,6 +194,20 @@ function Set-AzSKPolicySettings {
                 }
                 else {
                     $azskSettings.EnableAADAuthForOnlinePolicyStore = $false
+                }
+            }
+
+            #Set local policy folder path to OnlinePolicyStoreUrl. At runtime it will detect its folder path and starting running cmdlets with local policy.
+            if($LocalOrgPolicyFolderPath)
+            {
+                if((-not[string]::IsNullOrWhiteSpace($LocalOrgPolicyFolderPath)) -and (Test-Path $LocalOrgPolicyFolderPath))
+                {
+                    $azskSettings.OnlinePolicyStoreUrl = $LocalOrgPolicyFolderPath
+                }
+                else {
+                    
+                    [EventBase]::PublishGenericCustomMessage("Policy folder does not exists. Enter valid policy folder path: $LocalOrgPolicyFolderPath", [MessageType]::Error);
+                    return
                 }
             }
 
@@ -206,15 +240,16 @@ function Set-AzSKPolicySettings {
             else {
                 $azskSettings.AzureEnvironment = [Constants]::DefaultAzureEnvironment
             }
-            [ConfigurationManager]::UpdateAzSKSettings($azskSettings);            
-            [EventBase]::PublishGenericCustomMessage("Successfully configured policy settings. `nStart a fresh PS console/session to ensure any policy updates are (re-)loaded.", [MessageType]::Warning);
+            [ConfigurationManager]::UpdateAzSKSettings($azskSettings);
+            [ConfigOverride]::ClearConfigInstance();            
+            [EventBase]::PublishGenericCustomMessage("Successfully configured policy settings.", [MessageType]::Warning);
         }
         catch {
             [EventBase]::PublishGenericException($_);
         }
     }
     End {
-        [ListenerHelper]::UnregisterListeners();
+        [AzListenerHelper]::UnregisterListeners();
     }
 }
 
@@ -246,7 +281,7 @@ function Set-AzSKLocalAIOrgTelemetrySettings {
     )
     Begin {
         [CommandHelper]::BeginCommand($PSCmdlet.MyInvocation);
-        [ListenerHelper]::RegisterListeners();
+        [AzListenerHelper]::RegisterListeners();
     }
     Process {
         try { 
@@ -261,7 +296,7 @@ function Set-AzSKLocalAIOrgTelemetrySettings {
         }
     }
     End {
-        [ListenerHelper]::UnregisterListeners();
+        [AzListenerHelper]::UnregisterListeners();
     }
 }
 
@@ -287,7 +322,7 @@ function Set-AzSKUsageTelemetryLevel {
     )
     Begin {
         [CommandHelper]::BeginCommand($PSCmdlet.MyInvocation);
-        [ListenerHelper]::RegisterListeners();
+        [AzListenerHelper]::RegisterListeners();
     }
     Process {
         try {
@@ -301,7 +336,7 @@ function Set-AzSKUsageTelemetryLevel {
         }
     }
     End {
-        [ListenerHelper]::UnregisterListeners();
+        [AzListenerHelper]::UnregisterListeners();
     }
 }
 
@@ -351,7 +386,7 @@ function Set-AzSKUserPreference {
     )
     Begin {
         [CommandHelper]::BeginCommand($PSCmdlet.MyInvocation);
-        [ListenerHelper]::RegisterListeners();
+        [AzListenerHelper]::RegisterListeners();
     }
     Process {
         try {
@@ -388,7 +423,7 @@ function Set-AzSKUserPreference {
         }
     }
     End {
-        [ListenerHelper]::UnregisterListeners();
+        [AzListenerHelper]::UnregisterListeners();
     }
 }
 
@@ -416,7 +451,7 @@ function Send-AzSKInternalData {
     )
     Begin {
         [CommandHelper]::BeginCommand($PSCmdlet.MyInvocation);
-        [ListenerHelper]::RegisterListeners();
+        [AzListenerHelper]::RegisterListeners();
     }
     Process {
         try {
@@ -431,7 +466,7 @@ function Send-AzSKInternalData {
         }
     }
     End {
-        [ListenerHelper]::UnregisterListeners();
+        [AzListenerHelper]::UnregisterListeners();
     }
 }
 
@@ -459,7 +494,7 @@ function Set-AzSKPrivacyNoticeResponse {
     )
     Begin {
         [CommandHelper]::BeginCommand($PSCmdlet.MyInvocation);
-        [ListenerHelper]::RegisterListeners();
+        [AzListenerHelper]::RegisterListeners();
     }
     Process {
         try {
@@ -483,7 +518,7 @@ function Set-AzSKPrivacyNoticeResponse {
 
     }
     End {
-        [ListenerHelper]::UnregisterListeners();
+        [AzListenerHelper]::UnregisterListeners();
     }
 }
 
@@ -495,4 +530,6 @@ function Clear-AzSKSessionState {
 
 }
 
-. $PSScriptRoot\Framework\Helpers\AliasHelper.ps1
+$FrameworkPath =  ((Get-Item $PSScriptRoot).Parent).FullName +"\AzSK.Framework"
+
+. $FrameworkPath\Helpers\AliasHelper.ps1

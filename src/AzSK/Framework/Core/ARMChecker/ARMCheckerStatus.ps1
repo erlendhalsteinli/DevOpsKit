@@ -4,6 +4,7 @@ Set-StrictMode -Version Latest
 class ARMCheckerStatus: EventBase
 {
 	hidden [string] $ARMControls;
+	hidden [string []] $BaselineControls;
 	hidden [string] $PSLogPath;
 	hidden [string] $SFLogPath;
 	[bool] $DoNotOpenOutputFolder = $false;
@@ -14,11 +15,12 @@ class ARMCheckerStatus: EventBase
 		{
             throw [System.ArgumentException] ("The argument 'invocationContext' is null. Pass the `$PSCmdlet.MyInvocation from PowerShell command.");
         }
-        $this.InvocationContext = $invocationContext;
-
-		#load config file here.
+		$this.InvocationContext = $invocationContext;
+		# Set current Module name and Version
+		$this.SetAzSKModuleName($this.invocationContext);
+		$this.SetCurrentAzSKModuleVersion($this.invocationContext);
+		# Load config file here.
 		$this.ARMControls=$this.LoadARMControlsFile();
-		#$this.ARMControls = [ConfigurationHelper]::LoadOfflineConfigFile("ARMControls.json", $false);
 		if([string]::IsNullOrWhiteSpace($this.ARMControls))
 		{
 			throw ([SuppressedException]::new(("There are no controls to evaluate in ARM checker. Please contact support team."), [SuppressedExceptionType]::InvalidOperation))
@@ -30,8 +32,24 @@ class ARMCheckerStatus: EventBase
 		}
 	}
 
-	hidden [void] CommandStartedAction()
+	hidden [void] SetAzSKModuleName([InvocationInfo] $invocationContext)
 	{
+		if($invocationContext)
+		{
+			[Constants]::SetAzSKModuleName($invocationContext.MyCommand.Module.Name);
+		}
+	}
+
+	hidden [void] SetCurrentAzSKModuleVersion([InvocationInfo] $invocationContext)
+	{
+		if($invocationContext)
+		{
+			[Constants]::SetAzSKCurrentModuleVersion($invocationContext.MyCommand.Version);
+		}
+	}
+
+	hidden [void] CommandStartedAction()
+	{   
 		$currentVersion = $this.GetCurrentModuleVersion();
 		$moduleName = $this.GetModuleName();
 		$methodName = $this.InvocationContext.InvocationName;
@@ -51,13 +69,55 @@ class ARMCheckerStatus: EventBase
 	}
 
 
-	[string] EvaluateStatus([string] $armTemplatePath,[Boolean]  $isRecurse,[string] $exemptControlListPath,[string] $ExcludeFiles)
+	[string] EvaluateStatus([string] $armTemplatePath, [string] $parameterFilePath ,[Boolean]  $isRecurse,[string] $exemptControlListPath,[string] $ExcludeFiles, [string] $ExcludeControlIds, [string] $ControlIds,[Boolean] $UseBaselineControls,[Boolean] $UsePreviewBaselineControls, [string[]]$Severity)
 	{
+        $this.CommandStartedAction();
 	    if(-not (Test-Path -path $armTemplatePath))
 		{
 			$this.WriteMessage("ARMTemplate file path or folder path is empty, verify that the path is correct and try again", [MessageType]::Error);
 			return $null;
 		}
+		
+		#load baseline control list 
+		$ErrorLoadingControlSettings = $this.LoadControlSettingsFile($UseBaselineControls, $UsePreviewBaselineControls);
+		if($ErrorLoadingControlSettings){
+			return $null;
+		}
+
+		# Check if parameter file path is provided by user
+		if([string]::IsNullOrEmpty($parameterFilePath))
+		{
+			$parameterFileProvided = $false;
+		}else{
+			$parameterFileProvided = $true;
+		}
+
+		# Check if provided parameter file path is valid  
+		if($parameterFileProvided -and -not (Test-Path -path $parameterFilePath))
+		{
+		    $parameterFileProvided = $false;
+			$this.WriteMessage("Template parameter file path or folder path is empty, verify that the path is correct and try again", [MessageType]::Warning);
+		}
+
+		# Check if provided parameter file path is a single file or folder 
+		$ParameterFiles = $null;
+		$paramterFileContent = $null;
+		if($parameterFileProvided -and (Test-Path -path $parameterFilePath -PathType Leaf))
+		{
+		  $paramterFileContent = Get-Content $parameterFilePath -Raw
+		}elseif ($parameterFileProvided) {
+			if($isRecurse -eq $true)
+			{
+				$ParameterFiles = Get-ChildItem -Path $parameterFilePath -Recurse -Filter '*.parameters.json' 
+			}
+			else
+			{
+				$ParameterFiles = Get-ChildItem -Path $parameterFilePath -Filter '*.parameters.json' 
+			}
+		}
+			
+		
+
 		$this.PSLogPath = "";
 		$baseDirectory = [System.IO.Path]::GetDirectoryName($armTemplatePath);
 	    if($isRecurse -eq $true)
@@ -72,12 +132,12 @@ class ARMCheckerStatus: EventBase
 	    $armEvaluator = [AzSK.ARMChecker.Lib.ArmTemplateEvaluator]::new([string] $this.ARMControls);
 		$skippedFiles = @();
 		$timeMarker = [datetime]::Now.ToString("yyyyMMdd_HHmmss")
-		$resultsFolder = [Constants]::AzSKLogFolderPath + [Constants]::AzSKModuleName + "Logs\ARMChecker\" + $timeMarker + "\";
-		$csvFilePath = $resultsFolder + "ARMCheckerResults_" + $timeMarker + ".csv";
+		$resultsFolder = Join-Path $([Constants]::AzSKLogFolderPath) $([Constants]::AzSKModuleName + "Logs") | Join-Path -ChildPath "ARMChecker" | Join-Path -ChildPath $timeMarker ;
+		$csvFilePath = Join-Path $resultsFolder ("ARMCheckerResults_" + $timeMarker + ".csv");
 		[System.IO.Directory]::CreateDirectory($resultsFolder) | Out-Null
-		$this.PSLogPath = $resultsFolder + "PowerShellOutput.LOG";
-		$this.SFLogPath = $resultsFolder + "SkippedFiles.LOG";
-		$this.CommandStartedAction();
+		$this.PSLogPath = Join-Path $resultsFolder "PowerShellOutput.LOG";
+		$this.SFLogPath = Join-Path $resultsFolder "SkippedFiles.LOG";
+		
 		$csvResults = @();
 		$armcheckerscantelemetryEvents = [System.Collections.ArrayList]::new()
 		$scannedFileCount = 0
@@ -85,11 +145,13 @@ class ARMCheckerStatus: EventBase
 		$filesToExclude=@()
 		$filesToExcludeCount=0
 		$excludedFiles=@()
+		$filteredFiles = @();
+		$ControlsToScanBySeverity =@();
 		try{
 		  if(-not([string]::IsNullOrEmpty($exemptControlListPath)) -and (Test-Path -path $exemptControlListPath -PathType Leaf))
 		  {
 		    $exemptControlListFile=Get-Content $exemptControlListPath | ConvertFrom-Csv
-	        $exemptControlList=$exemptControlListFile| where{$_.Status -eq "Failed"}
+	        $exemptControlList=$exemptControlListFile| where {$_.Status -eq "Failed" -or $_.Status -eq "Verify"} 
 		  }
 		}catch{
 		    $this.WriteMessage("Unable to read file containing list of controls to skip, Please verify file path.", [MessageType]::Warning);
@@ -97,7 +159,6 @@ class ARMCheckerStatus: EventBase
 		if(-not([string]::IsNullOrEmpty($ExcludeFiles)))
 		{
 		  $ExcludeFileFilters = @();
-          $filteredFiles = @();
 		  $ExcludeFileFilters = $this.ConvertToStringArray($ExcludeFiles);
 		  $ExcludeFileFilters | ForEach-Object {
 			if($isRecurse -eq $true)
@@ -112,24 +173,109 @@ class ARMCheckerStatus: EventBase
 			   $filesToExclude | Select-Object Name | ForEach-Object { $filteredFiles += $_.Name}
 			}
 		  }
-		  $filesToExclude = $filteredFiles -join ","
+		$filesToExclude = $filteredFiles -join ","
 		$filesToExcludeCount = ($filesToExclude| Measure-Object).Count 
 		}
+
+		# Check if both -ControlIds and ExcludeControlIds switch are provided , return with error message
+		if(-not([string]::IsNullOrEmpty($ControlIds)) -and -not([string]::IsNullOrEmpty($ExcludeControlIds))){
+			$this.WriteMessage("InvalidArgument: Both the parameters 'ControlIds' and 'ExcludeControlIds' contain values. You should use only one of these parameters.", [MessageType]::Error);
+		    return $null;
+		}
+
+		# Check if both -ControlIds and UseBaselineControls switch are provided , return with error message
+		if(-not([string]::IsNullOrEmpty($ControlIds)) -and $UseBaselineControls){
+			$this.WriteMessage("InvalidArgument: Both the parameters 'ControlIds' and 'UseBaselineControls' contain values. You should use only one of these parameters.", [MessageType]::Error);
+			return $null;
+		}
+
+		# Check if both -ControlIds and UsePreviewBaselineControls switch are provided , return with error message
+		if(-not([string]::IsNullOrEmpty($ControlIds)) -and $UsePreviewBaselineControls){
+			$this.WriteMessage("InvalidArgument: Both the parameters 'ControlIds' and 'UsePreviewBaselineControls' contain values. You should use only one of these parameters.", [MessageType]::Error);
+			return $null;
+		}
+
+		# Check if specific control ids to scan are provided by user  
+		$ControlsToScan = @();
+		if(-not([string]::IsNullOrEmpty($ControlIds)))
+		{
+		  $ControlsToScan = $this.ConvertToStringArray($ControlIds);
+		} 
+
+		if(-not([string]::IsNullOrEmpty($Severity)))
+        {
+			$Severity = $this.ConvertToStringArray($Severity);
+			$InvalidSeverities = @();
+			$InvalidSeverities += $Severity | Where-Object {$_ -notin [Enum]::GetNames('ControlSeverity')}
+			#Discard the severity inputs that are not in enum 
+			$Severity = $Severity | Where-Object {$_ -in [Enum]::GetNames('ControlSeverity')}
+			if($InvalidSeverities.Count -gt 0)
+			{
+				$this.WriteMessage("WARNING: No control severity corresponds to `"$($InvalidSeverities -join ', ')`" for your org.",[MessageType]::Warning);
+			}
+			$ControlsToScanBySeverity = $Severity
+        }
+
+		# Check if exclude control ids are provided by user 
+		$ControlsToExclude = @();
+		if(-not([string]::IsNullOrEmpty($ExcludeControlIds)))
+		{
+		  $ControlsToExclude = $this.ConvertToStringArray($ExcludeControlIds);
+		}
+
 		foreach($armTemplate in $ARMTemplates)
 		{
 		    $armFileName = $armTemplate.FullName.Replace($baseDirectory, ".");
-		    if(($filesToExcludeCount -eq 0) -or (-not $filesToExclude.Contains($armTemplate.Name)))
+		    if(($filesToExcludeCount -eq 0) -or (-not $filteredFiles.Contains($armTemplate.Name)))
 			{		
 			try
 			{
 				$results = @();
 				$csvResultsForCurFile=@();
-				$armTemplateContent = Get-Content $armTemplate.FullName -Raw		
-				$libResults = $armEvaluator.Evaluate($armTemplateContent, $null);
+				$relatedParameterFile = $null
+				$relatedParameterFileName = $null
+				$armTemplateContent = Get-Content $armTemplate.FullName -Raw	
+				if($null -ne $ParameterFiles -and ($ParameterFiles | Measure-Object).Count -gt 0)
+				{
+					$relatedParameterFileName = $armTemplate.Name.Replace(".json",".parameters.json");
+					$relatedParameterFile = $ParameterFiles | Where-Object { $_.Name -eq $relatedParameterFileName }
+					if($null -ne $relatedParameterFile)
+					{
+						$relatedParameterFile = $relatedParameterFile | Select-Object -First 1
+						$paramterFileContent = Get-Content $relatedParameterFile.FullName -Raw
+					}
+					$libResults = $armEvaluator.Evaluate($armTemplateContent, $paramterFileContent);
+				}else
+				{
+					$libResults = $armEvaluator.Evaluate($armTemplateContent, $paramterFileContent);
+					#$libResults = $armEvaluator.Evaluate($armTemplateContent, $null);
+				}
+				
 				$results += $libResults | Where-Object {$_.VerificationResult -ne "NotSupported"} | Select-Object -ExcludeProperty "IsEnabled"		
 		
+				if($null -ne $results -and ( $results| Measure-Object).Count -gt 0 -and $this.BaselineControls.Count -gt 0){
+					$results = $results | Where-Object {$this.BaselineControls -contains $_.ControlId}
+				}
+
+				if($null -ne $results -and ( $results | Measure-Object).Count  -gt 0 -and ( $ControlsToScan | Measure-Object).Count -gt 0 ){
+                    $results = $results | Where-Object {$ControlsToScan -contains $_.ControlId}
+                    
+                }
+
+				if($null -ne $results -and ( $results | Measure-Object).Count  -gt 0  -and ( $ControlsToExclude | Measure-Object).Count -gt 0){
+					$results = $results | Where-Object {$ControlsToExclude -notcontains $_.ControlId}
+				}
+
+				if($null -ne $results -and ( $results | Measure-Object).Count  -gt 0  -and ( $ControlsToScanBySeverity | Measure-Object).Count -gt 0){
+					$results = $results | Where-Object {$_.Severity -in $ControlsToScanBySeverity}
+				}
+
+				
 				$this.WriteMessage(([Constants]::DoubleDashLine + "`r`nStarting analysis: [FileName: $armFileName] `r`n" + [Constants]::SingleDashLine), [MessageType]::Info);
-				if($results.Count -gt 0)
+				if($null -ne $relatedParameterFile){
+					$this.WriteMessage(("`r`n[ParameterFileName: $relatedParameterFileName] `r`n" + [Constants]::SingleDashLine), [MessageType]::Info);
+				}
+				if($null -ne $results -and ($results | Measure-Object).Count -gt 0)
 				{   $scannedFileCount += 1;
 					foreach($result in $results)
 					{	       
@@ -171,7 +317,7 @@ class ARMCheckerStatus: EventBase
 						$csvResultItem.ResourcePath = $result.ResourceDataMarker.JsonPath	
 						if(($exemptControlList|Measure-Object).Count -gt 0)
 						{				
-                         $csvResultItem = Compare-Object -ReferenceObject $csvResultItem -DifferenceObject $exemptControlList -PassThru -IncludeEqual -Property ControlId,PropertyPath,FilePath 
+                         $csvResultItem = Compare-Object -ReferenceObject $csvResultItem -DifferenceObject $exemptControlList -PassThru -IncludeEqual -Property ControlId,PropertyPath 
 		                 $csvResultItem| ForEach-Object {
 		                               if($_.SideIndicator -eq "==")
 			                           {
@@ -250,7 +396,7 @@ class ARMCheckerStatus: EventBase
 				$this.AddSkippedFilesLog([Helpers]::ConvertObjectToString($_, $false));
 			};
 			$this.WriteMessage([Constants]::SingleDashLine, [MessageType]::Warning);
-			$this.WriteMessage("One or more files were skipped during the scan. Either the files are invalid as ARM templates or those resource types are currently not supported by this command.`nPlease verify the files and re-run the command. For files that should not be included in the scan, you can use the '-ExcludeFiles' parameter.",[MessageType]::Error);
+			$this.WriteMessage("One or more files were skipped during the scan. `nEither the files are invalid as ARM templates or those resource types are currently not supported by this command.`nPlease verify the files and re-run the command. `nFor files that should not be included in the scan, you can use the '-ExcludeFiles' parameter.",[MessageType]::Error);
 			$this.WriteMessage([Constants]::SingleDashLine, [MessageType]::Warning);
 		}
 
@@ -449,28 +595,59 @@ class ARMCheckerStatus: EventBase
         Add-Content -Value $message -Path $this.SFLogPath        
 	} 
 	
+	hidden [Object] MergeExtensionFile([Object] $source,[Object] $extend)
+	{ 	
+		if([Helpers]::CheckMember($extend,"resourceControlSets")){
+			$extend.resourceControlSets | ForEach-Object {
+				try{
+						$currentFeature  = $_
+						$existingFeature = $source.resourceControlSets | Where-Object {$_.featureName -eq $currentFeature.featureName } 
+						if($existingFeature -ne $null)
+						{
+							$existingFeature.controls += $currentFeature.controls
+						
+						}else{
+						
+							$source.resourceControlSets += $currentFeature
+						}
+					}catch{
+							# No need to break execution, source file will be returned
+					}
+			}
+
+		}
+		
+			
+	   return $source;
+	}
+
+
 	hidden [string] LoadARMControlsFile()
 	{ 	
 	   $serverFileContent=$null;
 	   $ARMControlsFileURI = [Constants]::ARMControlsFileURI
+	   $checkExtensionFile = $false
 	   try
 	   {
-		if(-not [ConfigurationManager]::GetLocalAzSKSettings().EnableAADAuthForOnlinePolicyStore)
-		{
-			$serverFileContent = [ConfigurationManager]::LoadServerConfigFile("ARMControls.json");
-		}
-		else {
-         $AzureContext = Get-AzureRmContext
-	  if(-not [string]::IsNullOrWhiteSpace($AzureContext)) 
-	   {
-		   $serverFileContent = [ConfigurationManager]::LoadServerConfigFile("ARMControls.json");
-	   }
-	   else
-	   {
-		   $serverFileContent = [ConfigurationHelper]::InvokeControlsAPI($ARMControlsFileURI, '', '', '');
-	   }
-	}
-	}
+			if(-not [ConfigurationManager]::GetLocalAzSKSettings().EnableAADAuthForOnlinePolicyStore)
+			{
+				$serverFileContent = [ConfigurationManager]::LoadServerConfigFile("ARMControls.json");
+				$checkExtensionFile = $true
+			}
+			else 
+			{
+				$AzureContext = Get-AzContext
+				if(-not [string]::IsNullOrWhiteSpace($AzureContext)) 
+				{
+					$serverFileContent = [ConfigurationManager]::LoadServerConfigFile("ARMControls.json");
+					$checkExtensionFile = $true
+				}
+				else
+				{
+					$serverFileContent = [ConfigurationHelper]::InvokeControlsAPI($ARMControlsFileURI, '', '', '');
+				}
+	        }
+	    }
 	   catch
 	   {
          try
@@ -483,17 +660,97 @@ class ARMCheckerStatus: EventBase
 		 # Load Offline File
          }
 	   }
-	   if($null -ne $serverFileContent)
-	   {
-	     $serverFileContent = $serverFileContent | ConvertTo-Json -Depth 10
-	   }else
+	   if($null -eq $serverFileContent)
 	   {
 	     $serverFileContent = [ConfigurationHelper]::LoadOfflineConfigFile("ARMControls.json", $false);
-		 $serverFileContent=$serverFileContent | ConvertTo-Json -Depth 10
-		}
-
+	   }
+	   #Check if extension file is present on server
+	   $extFileName = "ARMControls.ext.json"
+	   $extFileContent = $null
+	   $usePolicyStore = [ConfigurationManager]::GetAzSKSettings().UseOnlinePolicyStore
+	   $policyStoreUrlOrFolder = [ConfigurationManager]::GetAzSKSettings().OnlinePolicyStoreUrl
+	   $useAADAuthForPolicyStore = [ConfigurationManager]::GetAzSKSettings().EnableAADAuthForOnlinePolicyStore
+	   #Check if not in local policy debug mode then get .ext.json file from server.
+	   if(-not [ConfigurationHelper]::LocalPolicyEnabled) 
+	   {
+			if($checkExtensionFile -eq $true)
+			{
+			   $extFileContent = [ConfigurationManager]::LoadServerFileRaw($extFileName);
+			}
+	   }
+	   #Check if there is an .ext.json file in local org policy folder
+	   elseif ([ConfigurationHelper]::IsPolicyPresentOnServer($extFileName, $usePolicyStore, $policyStoreUrlOrFolder, $useAADAuthForPolicyStore))
+	   {
+		   Write-Warning "########## Looking for [$extFileName] locally..... ##########"
+		   $extFileContent = [ConfigurationHelper]::LoadOfflineConfigFile($extFileName, <#$parseJson#> $true, $policyStoreUrlOrFolder)
+	   }	  
+	   if($null -ne $extFileContent ){
+		$serverFileContent = $this.MergeExtensionFile($serverFileContent, $extFileContent )
+	   }
+	   $serverFileContent= $serverFileContent | ConvertTo-Json -Depth 10
 	   return $serverFileContent;
 	}
 
-}
+	hidden [boolean] LoadControlSettingsFile([Boolean] $UseBaselineControls, [Boolean] $UsePreviewBaselineControls)
+	{ 	
+			
+		if($UseBaselineControls -eq $true -or $UsePreviewBaselineControls -eq $true){
+			# Fetch control Settings data
+			$ControlSettings = $null
+			if(-not [ConfigurationManager]::GetLocalAzSKSettings().EnableAADAuthForOnlinePolicyStore)
+			{
+				$ControlSettings = [ConfigurationManager]::LoadServerConfigFile("ControlSettings.json");
+			}
+			else 
+			{
+				$AzureContext = Get-AzContext
+				if(-not [string]::IsNullOrWhiteSpace($AzureContext)) 
+				{
+					$ControlSettings = [ConfigurationManager]::LoadServerConfigFile("ControlSettings.json");
+				}
+				else
+				{
+					Write-Host "No Azure login found. Azure login context is required to fetch baseline controls defined for this policy." -ForegroundColor Red 
+					# return true if EnableAADAuthForOnlinePolicyStore is true but Az login context is null
+					return $true
+				}
+			}
+			# Filter control list for baseline controls
+			$baselineControlList = @();
+			if($UseBaselineControls)
+			{
+				if([Helpers]::CheckMember($ControlSettings ,"BaselineControls.ResourceTypeControlIdMappingList"))
+				{
+					$baselineControlList += $ControlSettings.BaselineControls.ResourceTypeControlIdMappingList | Select-Object ControlIds | ForEach-Object {  $_.ControlIds }
+				}
+			
+			}
+			# Filter control list for preview baseline controls
+			$previewBaselineControls = @();
+			if($UsePreviewBaselineControls)
+			{
+				if([Helpers]::CheckMember($ControlSettings,"PreviewBaselineControls.ResourceTypeControlIdMappingList") )
+				{
+					$previewBaselineControls += $ControlSettings.PreviewBaselineControls.ResourceTypeControlIdMappingList | Select-Object ControlIds | ForEach-Object {  $_.ControlIds }
+				}
+				$baselineControlList += $previewBaselineControls
+			}
 
+			if($baselineControlList -and $baselineControlList.Count -gt 0)
+			{
+				$this.BaselineControls += $baselineControlList
+				
+			}
+			else
+			{
+				Write-Host "There are no baseline/preview-baseline controls defined for your org." -ForegroundColor Yellow 
+				$this.BaselineControls = @()
+			}
+		}
+		else
+		{
+			$this.BaselineControls = @()
+		}
+		return $false
+	}
+}

@@ -6,7 +6,7 @@ function Install-AzSKContinuousAssurance
 	This command would help in installing Automation Account in your subscription to setup Continuous Assurance feature of AzSK 
 	.DESCRIPTION
 	This command will install an Automation Account (Name: AzSKContinuousAssurance) which runs security scan on subscription and resource groups which are specified during installation.
-	Security scan results will be populated in OMS which is configured during installation. Also, detailed logs will be stored in storage account (Name: azskyyyyMMddHHmmss format).  
+	Security scan results will be populated in Log Analytics workspace which is configured during installation. Also, detailed logs will be stored in storage account (Name: azskyyyyMMddHHmmss format).  
 	
 	.PARAMETER SubscriptionId
 		Subscription id in which Automation Account needs to be installed.
@@ -18,18 +18,18 @@ function Install-AzSKContinuousAssurance
 		Name of AutomationAccount. Default value is AzSKContinuousAssurance.
 	.PARAMETER ResourceGroupNames
 		Comma separated Application resource group names on which security scan should be performed by Automation Account.
-	.PARAMETER OMSWorkspaceId
-		Workspace ID of OMS where security scan results will be sent
-	.PARAMETER OMSSharedKey
-		Shared key of OMS which is used to monitor security scan results.
+	.PARAMETER LAWSId
+		Workspace ID of Log Analytics workspace where security scan results will be sent
+	.PARAMETER LAWSSharedKey
+		Shared key of Log Analytics workspace which is used to monitor security scan results.
 	.PARAMETER LoggingOption
 		Gives the flexibility for the users to choose from central sub reports storage mode vs individual sub reports storage in CA Scaling scenario.
 	.PARAMETER AzureADAppName
 		Name for the Azure Active Directory (AD) Application that will be created in the subscription for running the runbook.
-	.PARAMETER AltOMSWorkspaceId
-		Alternate Workspace ID of OMS to monitor security scan results.
-	.PARAMETER AltOMSSharedKey
-		Shared key of Alternate OMS which is used to monitor security scan results.
+	.PARAMETER AltLAWSId
+		Workspace ID of alternate Log Analytics workspace to monitor security scan results.
+	.PARAMETER AltLAWSSharedKey
+		Shared key of alternate Log Analytics workspace which is used to monitor security scan results.
 	.PARAMETER WebhookUrl
 		All the scan results shall be posted to this configured webhook.
 	.PARAMETER WebhookAuthZHeaderName
@@ -92,33 +92,33 @@ function Install-AzSKContinuousAssurance
 		[Alias("rgns")]
 		$ResourceGroupNames ,       
 
-        [Parameter(Position = 2, Mandatory = $true, ParameterSetName = "CentralScanMode", HelpMessage="Workspace ID of OMS where security scan results will be populated.")]
-        [Parameter(Position = 2, Mandatory = $true, ParameterSetName = "Default", HelpMessage="Workspace ID of OMS where security scan results will be populated.")]
+        [Parameter(Position = 2, Mandatory = $true, ParameterSetName = "CentralScanMode", HelpMessage="Workspace ID of Log Analytics workspace where security scan results will be populated.")]
+        [Parameter(Position = 2, Mandatory = $true, ParameterSetName = "Default", HelpMessage="Workspace ID of Log Analytics workspace where security scan results will be populated.")]
         [string]
 		[ValidateNotNullOrEmpty()]
-		[Alias("owid")]
-		$OMSWorkspaceId,
+		[Alias("lwid","wid","OMSWorkspaceId")]
+		$LAWSId,
 
-        [Parameter(Position = 3, Mandatory = $true, ParameterSetName = "CentralScanMode", HelpMessage="Shared key of OMS which is used to monitor security scan results.")]
-        [Parameter(Position = 3, Mandatory = $true, ParameterSetName = "Default", HelpMessage="Shared key of OMS which is used to monitor security scan results.")]
+        [Parameter(Position = 3, Mandatory = $true, ParameterSetName = "CentralScanMode", HelpMessage="Shared key of Log Analytics workspace which is used to monitor security scan results.")]
+        [Parameter(Position = 3, Mandatory = $true, ParameterSetName = "Default", HelpMessage="Shared key of Log Analytics workspace which is used to monitor security scan results.")]
         [string]
 		[ValidateNotNullOrEmpty()]
-		[Alias("okey")]
-		$OMSSharedKey,
+		[Alias("lwkey","wkey","OMSSharedKey")]
+		$LAWSSharedKey,
 
 		[Parameter(Mandatory = $false, ParameterSetName = "Default")]
 		[Parameter(Mandatory = $false, ParameterSetName = "CentralScanMode")]
 		[ValidateNotNullOrEmpty()]
         [string]
-		[Alias("aowid")]
-		$AltOMSWorkspaceId,
+		[Alias("alwid","awid","AltOMSWorkspaceId")]
+		$AltLAWSId,
 
         [Parameter(Mandatory = $false, ParameterSetName = "Default")]
         [Parameter(Mandatory = $false, ParameterSetName = "CentralScanMode")]
 		[ValidateNotNullOrEmpty()]
         [string]
-		[Alias("aokey")]
-		$AltOMSSharedKey,
+		[Alias("alkey","awkey","AltOMSSharedKey")]
+		$AltLAWSSharedKey,
 
 		[Parameter(Mandatory = $false, ParameterSetName = "Default")]
 		[Parameter(Mandatory = $false, ParameterSetName = "CentralScanMode")]
@@ -183,7 +183,7 @@ function Install-AzSKContinuousAssurance
 	Begin
 	{
 		[CommandHelper]::BeginCommand($PSCmdlet.MyInvocation);
-		[ListenerHelper]::RegisterListeners();
+		[AzListenerHelper]::RegisterListeners();
 	}
 	Process
 	{
@@ -208,8 +208,8 @@ function Install-AzSKContinuousAssurance
 			$ccAccount = [CCAutomation]::new($SubscriptionId, $PSCmdlet.MyInvocation,`
 				$AutomationAccountLocation, $AutomationAccountRGName, $AutomationAccountName, $ResourceGroupNames,`
 				$AzureADAppName, $ScanIntervalInHours);
-			#set the OMS settings
-			$ccAccount.SetOMSSettings($OMSWorkspaceId, $OMSSharedKey, $AltOMSWorkspaceId, $AltOMSSharedKey);
+			#set the Log Analytics workspace settings
+			$ccAccount.SetLAWSSettings($LAWSId, $LAWSSharedKey, $AltLAWSId, $AltLAWSSharedKey);
 
 			#set the Webhook settings
 			$ccAccount.SetWebhookSettings($WebhookUrl, $WebhookAuthZHeaderName, $WebhookAuthZHeaderValue);
@@ -245,7 +245,7 @@ function Install-AzSKContinuousAssurance
 	}
 	End
 	{
-		[ListenerHelper]::UnregisterListeners();
+		[AzListenerHelper]::UnregisterListeners();
 	}
 }
 
@@ -255,7 +255,7 @@ function Update-AzSKContinuousAssurance
 	.SYNOPSIS
 	This command would help in updating user configurable properties of Continuous Assurance Automation Account in your subscription
 	.DESCRIPTION
-	This command is helpful if you want to update any of the following properties. 1. App Resource Groups 2. OMS Workspace ID 3. OMS Shared Key
+	This command is helpful if you want to update any of the following properties. 1. App Resource Groups 2. Log Analytics Workspace ID 3. Log Analytics Shared Key
 	4. Connection in Run as Account 5. Update/Renew Certificate in Run as Account
 
 	.PARAMETER SubscriptionId
@@ -266,20 +266,20 @@ function Update-AzSKContinuousAssurance
 		Name of ResourceGroup where AutomationAccount will be installed.
 	.PARAMETER AutomationAccountName
 		Name of AutomationAccount. Default value is AzSKContinuousAssurance.
-	.PARAMETER OMSWorkspaceId
-		Workspace ID of OMS where security scan results will be populated
-	.PARAMETER OMSSharedKey
-		Shared key of OMS which is used to monitor security scan results
+	.PARAMETER LAWSId
+		Workspace ID of Log Analytics workspace where security scan results will be populated
+	.PARAMETER LAWSSharedKey
+		Shared key of Log Analytics workspace which is used to monitor security scan results
 	.PARAMETER AzureADAppName
 		Name for the Azure Active Directory (AD) Application that will be created to update automation account Connection in Run As Account for running the runbook
 	.PARAMETER UpdateCertificate
 		Switch to update certificate credential for AzureADApp SPN and upload the certificate to automation account.
 	.PARAMETER TargetSubscriptionIds
 		Comma separated values of targetsubscriptionIds that will get monitored from the central subscription through CA. Use this switch along with CentralScanMode switch.
-	.PARAMETER AltOMSWorkspaceId
-		Alternate Workspace ID of OMS to monitor security scan results
-	.PARAMETER AltOMSSharedKey
-		Shared key of Alternate OMS which is used to monitor security scan results
+	.PARAMETER AltLAWSId
+		Workspace ID of alternate Log Analytics workspace to monitor security scan results
+	.PARAMETER AltLAWSSharedKey
+		Shared key of alternate Log Analytics workspace which is used to monitor security scan results
 	.PARAMETER WebhookUrl
 		All the scan results shall be posted to this configured webhook
 	.PARAMETER WebhookAuthZHeaderName
@@ -301,7 +301,7 @@ function Update-AzSKContinuousAssurance
 	.PARAMETER RenewCertificate
 			 Renews certificate credential of CA SPN if the caller is Owner of the AAD Application (SPN). If the caller is not Owner, a new application is created with a corresponding SPN and a certificate owned by the caller. CA uses the updated credential going forward.
 	.PARAMETER FixModules
-			 Use this switch in case 'AzureRm.Automation' module extraction fails in CA Automation Account. 
+			 Use this switch in case 'Az.Automation' module extraction fails in CA Automation Account. 
 	.PARAMETER DoNotOpenOutputFolder
 		Switch to specify whether to open output folder.
 	.NOTES
@@ -347,29 +347,29 @@ function Update-AzSKContinuousAssurance
 		[Parameter(Mandatory = $false, ParameterSetName = "CentralScanMode")]
 		[ValidateNotNullOrEmpty()]	
         [string]
-		[Alias("owid")]
-		$OMSWorkspaceId,
+		[Alias("lwid","wid","OMSWorkspaceId")]
+		$LAWSId,
 
         [Parameter(Mandatory = $false, ParameterSetName = "Default")]
         [Parameter(Mandatory = $false, ParameterSetName = "CentralScanMode")]
 		[ValidateNotNullOrEmpty()]
         [string]
-		[Alias("okey")]
-		$OMSSharedKey,
+		[Alias("lwkey","wkey","OMSSharedKey")]
+		$LAWSSharedKey,
 
 		[Parameter(Mandatory = $false, ParameterSetName = "Default")]
 		[Parameter(Mandatory = $false, ParameterSetName = "CentralScanMode")]
 		[ValidateNotNullOrEmpty()]
         [string]
-		[Alias("aowid")]
-		$AltOMSWorkspaceId,
+		[Alias("alwid","awid","AltOMSWorkspaceId")]
+		$AltLAWSId,
 
         [Parameter(Mandatory = $false, ParameterSetName = "Default")]
         [Parameter(Mandatory = $false, ParameterSetName = "CentralScanMode")]
 		[ValidateNotNullOrEmpty()]
         [string]
-		[Alias("aokey")]
-		$AltOMSSharedKey,
+		[Alias("alkey","awkey","AltOMSSharedKey")]
+		$AltLAWSSharedKey,
 
 		[Parameter(Mandatory = $false, ParameterSetName = "Default")]
 		[Parameter(Mandatory = $false, ParameterSetName = "CentralScanMode")]
@@ -449,8 +449,8 @@ function Update-AzSKContinuousAssurance
 		[Alias("dnof")]
 		$DoNotOpenOutputFolder,
 
-		[Parameter(Mandatory = $true, ParameterSetName = "RemoveSettings", HelpMessage="This switch is used to clear setting for OMS,AltOMS or Webhook.")]
-		[ValidateSet("OMSSettings","AltOMSSettings","WebhookSettings","ScanOnDeployment")]
+		[Parameter(Mandatory = $true, ParameterSetName = "RemoveSettings", HelpMessage="This switch is used to clear setting for Log Analytics workspace,Alt Log Analytics workspace or Webhook.")]
+		[ValidateSet("LAWSSettings","AltLAWSSettings","WebhookSettings","ScanOnDeployment")]
 		[Alias("rmv")]
 		$Remove,
 
@@ -462,7 +462,7 @@ function Update-AzSKContinuousAssurance
 	Begin
 	{
 		[CommandHelper]::BeginCommand($PSCmdlet.MyInvocation);
-		[ListenerHelper]::RegisterListeners();
+		[AzListenerHelper]::RegisterListeners();
 	}
 	Process
 	{
@@ -474,11 +474,11 @@ function Update-AzSKContinuousAssurance
 			{
 				switch($Remove)
 				{
-					"OMSSettings" {
-						return $ccAccount.InvokeFunction($ccAccount.RemoveOMSSettings);								 
+					"LAWSSettings" {
+						return $ccAccount.InvokeFunction($ccAccount.RemoveLAWSSettings);								 
 						}
-					"AltOMSSettings" {
-						return $ccAccount.InvokeFunction($ccAccount.RemoveAltOMSSettings);
+					"AltLAWSSettings" {
+						return $ccAccount.InvokeFunction($ccAccount.RemoveAltLAWSSettings);
 						}
 					"WebhookSettings" {
 						return $ccAccount.InvokeFunction($ccAccount.RemoveWebhookSettings);
@@ -492,8 +492,8 @@ function Update-AzSKContinuousAssurance
 			}
 			else
 			{
-					#set the OMS settings
-					$ccAccount.SetOMSSettings($OMSWorkspaceId, $OMSSharedKey, $AltOMSWorkspaceId, $AltOMSSharedKey);
+					#set the Log Analytics workspace settings
+					$ccAccount.SetLAWSSettings($LAWSId, $LAWSSharedKey, $AltLAWSId, $AltLAWSSharedKey);
 
 			#set the Webhook settings
 			$ccAccount.SetWebhookSettings($WebhookUrl, $WebhookAuthZHeaderName, $WebhookAuthZHeaderValue);
@@ -528,7 +528,7 @@ function Update-AzSKContinuousAssurance
 	}
 	End
 	{
-		[ListenerHelper]::UnregisterListeners();
+		[AzListenerHelper]::UnregisterListeners();
 	}
 }
 
@@ -582,7 +582,7 @@ function Get-AzSKContinuousAssurance
 	Begin
 	{
 		[CommandHelper]::BeginCommand($PSCmdlet.MyInvocation);
-		[ListenerHelper]::RegisterListeners();
+		[AzListenerHelper]::RegisterListeners();
 	}
 	Process
 	{
@@ -603,7 +603,7 @@ function Get-AzSKContinuousAssurance
 	}
 	End
 	{
-		[ListenerHelper]::UnregisterListeners();
+		[AzListenerHelper]::UnregisterListeners();
 	}
 }
 
@@ -683,7 +683,7 @@ function Remove-AzSKContinuousAssurance
 	Begin
 	{
 		[CommandHelper]::BeginCommand($PSCmdlet.MyInvocation);
-		[ListenerHelper]::RegisterListeners();
+		[AzListenerHelper]::RegisterListeners();
 	}
 	Process
 	{
@@ -710,7 +710,7 @@ function Remove-AzSKContinuousAssurance
 	}
 	End
 	{
-		[ListenerHelper]::UnregisterListeners();
+		[AzListenerHelper]::UnregisterListeners();
 	}
 }
 
@@ -756,7 +756,7 @@ function Set-AzSKAlertMonitoring
 	Begin
 	{
 		[CommandHelper]::BeginCommand($PSCmdlet.MyInvocation);
-		[ListenerHelper]::RegisterListeners();
+		[AzListenerHelper]::RegisterListeners();
 	}
 	Process
 	{
@@ -776,7 +776,7 @@ function Set-AzSKAlertMonitoring
 	}
 	End
 	{
-		[ListenerHelper]::UnregisterListeners();
+		[AzListenerHelper]::UnregisterListeners();
 	}
 }
 
@@ -822,7 +822,7 @@ function Remove-AzSKAlertMonitoring
 	Begin
 	{
 		[CommandHelper]::BeginCommand($PSCmdlet.MyInvocation);
-		[ListenerHelper]::RegisterListeners();
+		[AzListenerHelper]::RegisterListeners();
 	}
 	Process
 	{
@@ -842,7 +842,7 @@ function Remove-AzSKAlertMonitoring
 	}
 	End
 	{
-		[ListenerHelper]::UnregisterListeners();
+		[AzListenerHelper]::UnregisterListeners();
 	}
 }
 

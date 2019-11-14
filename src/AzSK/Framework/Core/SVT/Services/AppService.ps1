@@ -1,25 +1,18 @@
 #using namespace Microsoft.Azure.Commands.AppService.Models
 Set-StrictMode -Version Latest
-class AppService: SVTBase
+class AppService: AzSVTBase
 {
     hidden [PSObject] $ResourceObject;
 	hidden [PSObject] $WebAppDetails;
+	hidden [PSObject] $SiteConfigs;
 	hidden [PSObject] $AuthenticationSettings;
 	hidden [bool] $IsReaderRole;
-
-    AppService([string] $subscriptionId, [string] $resourceGroupName, [string] $resourceName):
-        Base($subscriptionId, $resourceGroupName, $resourceName)
-    {
-        $this.GetResourceObject();
-		$this.AddResourceMetadata($this.ResourceObject.Properties)
-
-    }
 
     AppService([string] $subscriptionId, [SVTResource] $svtResource):
         Base($subscriptionId, $svtResource)
     {
-        $this.GetResourceObject();
-		$this.AddResourceMetadata($this.ResourceObject.Properties)
+				$this.GetResourceObject();
+	    	$this.AddResourceMetadata($this.ResourceObject.Properties)
 
     }
 
@@ -31,58 +24,73 @@ class AppService: SVTBase
 	}
     hidden [PSObject] GetResourceObject()
     {
-        if (-not $this.ResourceObject)
-		{
-			# Get App Service details
-            $this.ResourceObject = Get-AzureRmResource -Name $this.ResourceContext.ResourceName  `
-                                        -ResourceType $this.ResourceContext.ResourceType `
-                                        -ResourceGroupName $this.ResourceContext.ResourceGroupName
-
-            if(-not $this.ResourceObject)
-            {
-				throw ([SuppressedException]::new(("Resource '$($this.ResourceContext.ResourceName)' not found under Resource Group '$($this.ResourceContext.ResourceGroupName)'"), [SuppressedExceptionType]::InvalidOperation))
-            }
-
-			# Get web sites details
-			$this.WebAppDetails = Get-AzureRmWebApp -Name $this.ResourceContext.ResourceName `
-									-ResourceGroupName $this.ResourceContext.ResourceGroupName
-
-			try
-			{ 
-				$this.AuthenticationSettings = Invoke-AzureRmResourceAction -ResourceType "Microsoft.Web/sites/config/authsettings" `
-                                                                                    -ResourceGroupName $this.ResourceContext.ResourceGroupName `
-                                                                                    -ResourceName $this.ResourceContext.ResourceName `
-                                                                                    -Action list `
-                                                                                    -ApiVersion $this.ControlSettings.AppService.AADAuthAPIVersion `
-                                                                                    -Force `
-                                                                                    -ErrorAction Stop
-				$this.IsReaderRole = $false;
-			}
-			catch
+			if (-not $this.ResourceObject)
 			{
-				if(($_.Exception | Get-Member -Name "HttpStatus" ) -and $_.Exception.HttpStatus -eq "Forbidden")
-				{
-					$this.IsReaderRole = $true;
-				}	
-			}
-        }
+				# Get App Service details
+							$this.ResourceObject = Get-AzResource -Name $this.ResourceContext.ResourceName  `
+																					-ResourceType $this.ResourceContext.ResourceType `
+																					-ResourceGroupName $this.ResourceContext.ResourceGroupName
 
+							if(-not $this.ResourceObject)
+							{
+					throw ([SuppressedException]::new(("Resource '$($this.ResourceContext.ResourceName)' not found under Resource Group '$($this.ResourceContext.ResourceGroupName)'"), [SuppressedExceptionType]::InvalidOperation))
+							}
+
+				# Get web sites details
+				$this.WebAppDetails = Get-AzWebApp -Name $this.ResourceContext.ResourceName `
+										-ResourceGroupName $this.ResourceContext.ResourceGroupName 
+
+				try
+				{ 
+					$this.AuthenticationSettings = Invoke-AzResourceAction -ResourceType "Microsoft.Web/sites/config/authsettings" `
+																																											-ResourceGroupName $this.ResourceContext.ResourceGroupName `
+																																											-ResourceName $this.ResourceContext.ResourceName `
+																																											-Action list `
+																																											-ApiVersion $this.ControlSettings.AppService.AADAuthAPIVersion `
+																																											-Force `
+																																											-ErrorAction Stop
+					$this.IsReaderRole = $false;
+				}
+				catch
+				{
+					if(($_.Exception | Get-Member -Name "HttpStatus" ) -and $_.Exception.HttpStatus -eq "Forbidden")
+					{
+						$this.IsReaderRole = $true;
+					}	
+				}
+
+				try{
+					$this.SiteConfigs = Get-AzResource -ResourceGroupName $this.ResourceContext.ResourceGroupName -ResourceType Microsoft.Web/sites/config -ResourceName $this.ResourceContext.ResourceName -ApiVersion 2018-02-01
+				  # Append SiteConfig to ResourceObject
+					if($null -ne $this.SiteConfigs -and [Helpers]::CheckMember($this.SiteConfigs,"Properties") -and [Helpers]::CheckMember($this.ResourceObject.Properties,"siteConfig", $false)){
+						$this.ResourceObject.Properties.siteConfig = $this.SiteConfigs.Properties
+					}
+				}catch{
+					$this.SiteConfigs = $null
+					# No need to break execution , null object is handled in respective controls
+				}
+		}
         return $this.ResourceObject;
     }
 	
 	[ControlItem[]] ApplyServiceFilters([ControlItem[]] $controls)
 	{
 		$serviceFilterTag = "AppService";
+		$osFilterTag = "Windows";
 		if([Helpers]::CheckMember($this.ResourceObject, "Kind"))
 		{
-			if($this.ResourceObject.Kind -eq "functionapp")
+			if($this.ResourceObject.Kind -like "*functionapp*")
 			{
 				$serviceFilterTag = "FunctionApp";
+			}
+			if($this.ResourceObject.Kind -like "*linux*")
+			{
+				$osFilterTag = "Linux";
 			}
 		}
 		
 		$result = @();
-		$result += $controls | Where-Object { $_.Tags -contains $serviceFilterTag };
+		$result += $controls | Where-Object { $_.Tags -contains $serviceFilterTag } | Where-Object { $_.Tags -contains $osFilterTag };
 		return $result;
 	}
 
@@ -100,7 +108,7 @@ class AppService: SVTBase
 		{
 			$controlResult.AddMessage([MessageData]::new("Custom domains are configured for resource " + $this.ResourceContext.ResourceName), $customHostNames);
 
-			$SSLStateNotEnabled = $this.ResourceObject.Properties.hostNameSslStates | Where-Object { (($customHostNames | Measure-Object) -contains $_.name) -and  ($_.sslState -eq 'Disabled')} | Select-Object -Property Name
+			$SSLStateNotEnabled = $this.ResourceObject.Properties.hostNameSslStates | Where-Object { ($customHostNames -contains $_.name) -and  ($_.sslState -eq 'Disabled')} | Select-Object -Property Name
 			if($null -eq $SSLStateNotEnabled)
 			{
 				$controlResult.AddMessage([VerificationResult]::Passed,
@@ -136,7 +144,7 @@ class AppService: SVTBase
 			if([Helpers]::CheckMember($this.ResourceObject, "Kind") -and ($this.ResourceObject.Kind -eq "functionapp"))
 			{
 				$ResourceAppIdURI = [WebRequestHelper]::GetServiceManagementUrl()
-				$accessToken = [Helpers]::GetAccessToken($ResourceAppIdURI)
+				$accessToken = [ContextHelper]::GetAccessToken($ResourceAppIdURI)
 				$authorisationToken = "Bearer " + $accessToken
 				$headers = @{"Authorization"=$authorisationToken;"Content-Type"="application/json"}
 
@@ -161,37 +169,46 @@ class AppService: SVTBase
 					$apiFunctionsUrl = [string]::Format("https://{0}.scm.{1}/api/functions",$this.ResourceContext.ResourceName,$AppURL)
 				}
 				
-				$functionDetail = [WebRequestHelper]::InvokeGetWebRequest($apiFunctionsUrl, $headers)
-		
-				#check if functions are present in FunctionApp	
-				if([Helpers]::CheckMember($functionDetail,"config"))
+				try
 				{
-					$bindingsDetail =$functionDetail.config.bindings
-	   				$ishttpTriggerFunction=$false
-					if(($bindingsDetail| Measure-Object).Count -gt 0)
-					{
-						$bindingsDetail |	 ForEach-Object{
-						if($_.type -eq "httpTrigger" )
+						$functionDetail = [WebRequestHelper]::InvokeGetWebRequest($apiFunctionsUrl, $headers)
+				
+						#check if functions are present in FunctionApp	
+						if([Helpers]::CheckMember($functionDetail,"config"))
+						{
+							$bindingsDetail =$functionDetail.config.bindings
+								$ishttpTriggerFunction=$false
+							if(($bindingsDetail| Measure-Object).Count -gt 0)
+							{
+								$bindingsDetail |	 ForEach-Object{
+								if($_.type -eq "httpTrigger" )
+										{
+										$ishttpTriggerFunction=$true
+									}
+								}
+								#if HTTP trigger function is not present, then AAD authentication is not required
+								if(!$ishttpTriggerFunction)
 								{
-								$ishttpTriggerFunction=$true
+									$controlResult.AddMessage([VerificationResult]::Passed,
+											[MessageData]::new("AAD Authentication for resource " + $this.ResourceContext.ResourceName + " is not required."));
+									return $controlResult;
+								}
 							}
 						}
-						#if HTTP trigger function is not present, then AAD authentication is not required
-						if(!$ishttpTriggerFunction)
+						#if no function is present in Functions App, then AAD authentication is not required
+						else
 						{
-							$controlResult.AddMessage([VerificationResult]::Passed,
+						$controlResult.AddMessage([VerificationResult]::Passed,
 									[MessageData]::new("AAD Authentication for resource " + $this.ResourceContext.ResourceName + " is not required."));
-							return $controlResult;
+						return $controlResult;
+					
 						}
-					}
 				}
-				#if no function is present in Functions App, then AAD authentication is not required
-				else
+				catch
 				{
-				$controlResult.AddMessage([VerificationResult]::Passed,
-							[MessageData]::new("AAD Authentication for resource " + $this.ResourceContext.ResourceName + " is not required."));
-				 return $controlResult;
-			
+					$controlResult.AddMessage([VerificationResult]::Manual,
+					        [MessageData]::new("Unable to fetch details of functions."));
+					return $controlResult;
 				}
 				
 			}
@@ -217,9 +234,51 @@ class AppService: SVTBase
 						}
 					}
 				}				
+
+			
+				#Check if any non AAD authenticaion is also enabled
+				if([Helpers]::CheckMember($this.ControlSettings,"AppService.NonAADAuthProperties")){
+					$nonAadSettings = New-Object PSObject
+					$nonAADAuthEnabled = $false
+					$NonAADAuthProperties = $this.ControlSettings.AppService.NonAADAuthProperties 
+					ForEach($authProperty in 	$NonAADAuthProperties){
+						if([Helpers]::CheckMember($this.AuthenticationSettings.Properties,$authProperty)){
+							$nonAADAuthEnabled = $true
+							Add-Member -InputObject $nonAadSettings -MemberType NoteProperty -Name $authProperty -Value $this.AuthenticationSettings.Properties.$($authProperty)
+						}
+					}
+					if($nonAADAuthEnabled ){
+						if($AADEnabled)
+						{
+							$controlResult.AddMessage("AAD Authentication for resource " + $this.ResourceContext.ResourceName + " is enabled "+ $aadSettings)
+						}
+						#Fail the control if non AAD authentication is enabled, irrespective of AAD is enabled or not 
+						$controlResult.AddMessage([VerificationResult]::Failed,
+						[MessageData]::new("Authentication mechanism other than AAD is enabled for " + $this.ResourceContext.ResourceName ));
+						$controlResult.AddMessage($nonAadSettings);
+						$controlResult.SetStateData("App Service authentication settings", $nonAadSettings);
+						return $controlResult;
+					}
+				}
 				
 				if($AADEnabled)
 				{
+					if([FeatureFlightingManager]::GetFeatureStatus("EnableAppServiceAADAuthAllowAnonymousCheck",$($this.SubscriptionContext.SubscriptionId)) -eq $true)
+					{
+						if(([Helpers]::CheckMember($this.AuthenticationSettings.Properties,"unauthenticatedClientAction")))
+						{
+							
+							Add-Member -InputObject $aadSettings -MemberType NoteProperty -Name "UnauthenticatedClientAction" -Value $this.AuthenticationSettings.Properties.unauthenticatedClientAction
+							if( $this.AuthenticationSettings.Properties.unauthenticatedClientAction -eq 'AllowAnonymous')
+							{
+								$controlResult.AddMessage([VerificationResult]::Failed,
+											[MessageData]::new("AAD Authentication for resource " + $this.ResourceContext.ResourceName + " is enabled."));
+								$controlResult.AddMessage("Action to take when request is not authenticated is set to $($this.AuthenticationSettings.Properties.unauthenticatedClientAction)")
+								$controlResult.AddMessage($aadSettings);
+								return $controlResult;
+							}
+						}
+					}
 					$controlResult.AddMessage([VerificationResult]::Passed,
 											[MessageData]::new("AAD Authentication for resource " + $this.ResourceContext.ResourceName + " is enabled", $aadSettings));
 				}
@@ -339,19 +398,28 @@ class AppService: SVTBase
     }
 
     hidden [ControlResult] CheckAppServiceInstanceCount([ControlResult] $controlResult)
-	{
-		# Get number of instances
-        $sku = (Get-AzureRmResource -ResourceId $this.ResourceObject.Properties.ServerFarmId).Sku
-
-		if($sku.Capacity -ge $this.ControlSettings.AppService.Minimum_Instance_Count)
-        {
-			$controlResult.AddMessage([VerificationResult]::Passed, [MessageData]::new("SKU for resource " + $this.ResourceContext.ResourceName + " is :", $sku));
-        }
-		else
-        {
-			$controlResult.EnableFixControl = $true;
-			$controlResult.AddMessage([VerificationResult]::Failed, [MessageData]::new("SKU for resource " + $this.ResourceContext.ResourceName + " is :", $sku));
-        }
+		{
+			# Get number of instances
+			$resource = Get-AzResource -ResourceId $this.ResourceObject.Properties.ServerFarmId
+			if(($resource|Measure-Object).Count -gt 0 -and [Helpers]::CheckMember($resource,"Sku"))
+			{
+				$sku = $resource.Sku
+				if($sku.Capacity -ge $this.ControlSettings.AppService.Minimum_Instance_Count)
+				{
+					$controlResult.AddMessage([VerificationResult]::Passed, [MessageData]::new("SKU for resource " + $this.ResourceContext.ResourceName + " is :", $sku));
+				}
+				else
+				{
+					$controlResult.EnableFixControl = $true;
+					$controlResult.AddMessage([VerificationResult]::Failed, [MessageData]::new("SKU for resource " + $this.ResourceContext.ResourceName + " is :", $sku));
+				}
+			}
+			else
+			{
+					$controlResult.EnableFixControl = $true;
+					$controlResult.AddMessage([VerificationResult]::Failed, [MessageData]::new("Resource not found. Please verify that the app service exists."));
+			}
+			
 
       return $controlResult;
     }
@@ -369,7 +437,7 @@ class AppService: SVTBase
 			}
 			else
 			{
-				$backupConfiguration = Get-AzureRmWebAppBackupConfiguration `
+				$backupConfiguration = Get-AzWebAppBackupConfiguration `
 													-ResourceGroupName $this.ResourceContext.ResourceGroupName `
 													-Name $this.ResourceContext.ResourceName `
 													-ErrorAction Stop
@@ -393,7 +461,7 @@ class AppService: SVTBase
 					if($null -ne $backupConfiguration)
 					{
 						$controlResult.AddMessage([MessageData]::new("Configured backup for resource " + $this.ResourceContext.ResourceName + " is not as per the security guidelines. Please make sure that the configured backup is inline with below settings:-"));
-						$controlResult.AddMessage([MessageData]::new("Enabled=True, StorageAccountEncryption=Enabled, RetentionPeriodInDays=0 or RetentionPeriodInDays>=365, BackupStartTime<=CurrentTime, KeepAtLeastOneBackup=True", $backupConfiguration));
+						$controlResult.AddMessage([MessageData]::new("Enabled=True, StorageAccountEncryption=Enabled, RetentionPeriodInDays=0 or RetentionPeriodInDays>=" + $this.ControlSettings.AppService.Backup_RetentionPeriod_Min +", BackupStartTime<=CurrentTime, KeepAtLeastOneBackup=True", $backupConfiguration));
 					}
 					else
 					{
@@ -471,16 +539,16 @@ class AppService: SVTBase
     hidden [ControlResult] CheckFunctionsAppHttpCertificateSSL([ControlResult] $controlResult)
 	{	
 			if($this.IsReaderRole)
-				{
-					#Setting this property ensures that this control result wont be considered for the central telemetry. As control doesnt have the required permissions
-					$controlResult.CurrentSessionContext.Permissions.HasRequiredAccess = $false;
-					$controlResult.AddMessage([VerificationResult]::Manual,
-                                    [MessageData]::new("Control can not be validated due to insufficient access permission on resource"));
-				}
+			{
+				#Setting this property ensures that this control result wont be considered for the central telemetry. As control doesnt have the required permissions
+				$controlResult.CurrentSessionContext.Permissions.HasRequiredAccess = $false;
+				$controlResult.AddMessage([VerificationResult]::Manual,
+                                [MessageData]::new("Control can not be validated due to insufficient access permission on resource"));
+			}
 			else
-				{
+			{
 				$ResourceAppIdURI = [WebRequestHelper]::GetServiceManagementUrl()
-				$accessToken = [Helpers]::GetAccessToken($ResourceAppIdURI)
+				$accessToken = [ContextHelper]::GetAccessToken($ResourceAppIdURI)
 				$authorisationToken = "Bearer " + $accessToken
 				$headers = @{"Authorization"=$authorisationToken;"Content-Type"="application/json"}
 				if([Helpers]::CheckMember($this.WebAppDetails,"EnabledHostNames"))
@@ -496,61 +564,82 @@ class AppService: SVTBase
 						$AppURL = $this.FormatURL($temp[0])
 						$apiFunctionsUrl = [string]::Format("https://{0}.scm.{1}/api/functions",$this.ResourceContext.ResourceName,$AppURL)
 					}
-			    }
+			  }
 				else
 				{
 					$temp = @($this.ResourceObject.Properties.HostNames | where-object { $_.Contains('.azurewebsites.') })
 					$AppURL = $this.FormatURL($temp[0])
 					$apiFunctionsUrl = [string]::Format("https://{0}.scm.{1}/api/functions",$this.ResourceContext.ResourceName,$AppURL)
 				}
-				#$apiFunctionsUrl = [string]::Format("https://{0}.scm.azurewebsites.net/api/functions",$this.ResourceContext.ResourceName)
-				$functionDetail = [WebRequestHelper]::InvokeGetWebRequest($apiFunctionsUrl, $headers)
-		
-			#check if functions are present in FunctionApp	
-			if([Helpers]::CheckMember($functionDetail,"config"))
-			{
-				$bindingsDetail =$functionDetail.config.bindings
-	   			$ishttpTriggerFunction=$false
-				if(($bindingsDetail| Measure-Object).Count -gt 0)
+				try
 				{
-				$bindingsDetail |	 ForEach-Object{
-					if($_.type -eq "httpTrigger" )
-					 {
-						$ishttpTriggerFunction=$true
-					}
-				}
-				#if HTTP trigger function is not present, then Http check is not required
-				if(!$ishttpTriggerFunction)
+						
+					$functionDetail = $null
+					#$apiFunctionsUrl = [string]::Format("https://{0}.scm.azurewebsites.net/api/functions",$this.ResourceContext.ResourceName)
+					if( [FeatureFlightingManager]::GetFeatureStatus("UseAzCommandForFunctionAppDetails",$($this.SubscriptionContext.SubscriptionId)) -eq $true)
 					{
+						$functionAppDetails = Get-AzResource -ResourceGroupName $this.ResourceContext.ResourceGroupName -ResourceName $this.ResourceContext.ResourceName -ResourceType 'Microsoft.Web/sites/functions' -ApiVersion '2015-08-01' -ErrorAction SilentlyContinue
+						if($null -ne $functionAppDetails -and [Helpers]::CheckMember($functionAppDetails,"Properties"))
+						{
+							$functionDetail = $functionAppDetails | ForEach-Object{ $_.Properties } 
+						}
+					}else{
+						$functionDetail = [WebRequestHelper]::InvokeGetWebRequest($apiFunctionsUrl, $headers)
+					}
+					
+						#check if functions are present in FunctionApp	
+						if($null -ne $functionDetail -and [Helpers]::CheckMember($functionDetail,"config"))
+						{
+							$bindingsDetail =$functionDetail.config.bindings
+								$ishttpTriggerFunction=$false
+							if(($bindingsDetail| Measure-Object).Count -gt 0)
+							{
+							$bindingsDetail |	 ForEach-Object{
+								if($_.type -eq "httpTrigger" )
+								{
+									$ishttpTriggerFunction=$true
+								}
+							}
+							#if HTTP trigger function is not present, then Http check is not required
+							if(!$ishttpTriggerFunction)
+								{
 
-					$controlResult.AddMessage([VerificationResult]::Passed,
-						[MessageData]::new("Enabling 'HttpsOnly' is not required for resource " + $this.ResourceContext.ResourceName + "."));
+								$controlResult.AddMessage([VerificationResult]::Passed,
+									[MessageData]::new("Enabling 'HttpsOnly' is not required for resource " + $this.ResourceContext.ResourceName + "."));
+							
+							}
+							else
+								{
+									$isHttpsEnabled = $this.ResourceObject.Properties.httpsOnly
+									if($isHttpsEnabled)
+											{
+													$controlResult.VerificationResult = [VerificationResult]::Passed
+											}
+									else
+											{
+													$controlResult.VerificationResult = [VerificationResult]::Failed
+											}
+								}
+
+						
+						}
 				
-				}
-				else
-					{
-						$isHttpsEnabled = $this.ResourceObject.Properties.httpsOnly
-						if($isHttpsEnabled)
-								{
-										$controlResult.VerificationResult = [VerificationResult]::Passed
-								}
+						}
+						#if no function is present in Functions App, then Http check is not required
 						else
-								{
-										$controlResult.VerificationResult = [VerificationResult]::Failed
-								}
-					}
-
-			
-			}
-	
-			}
-			#if no function is present in Functions App, then Http check is not required
-			else
-			{
-				$controlResult.AddMessage([VerificationResult]::Passed,
-						[MessageData]::new("Enabling 'HttpsOnly' is not required for this resource " + $this.ResourceContext.ResourceName + "."));
-			}
-		}
+						{
+							$controlResult.AddMessage([VerificationResult]::Passed,
+									[MessageData]::new("Enabling 'HttpsOnly' is not required for this resource " + $this.ResourceContext.ResourceName + "."));
+						}
+				}
+				catch
+				{
+					$controlResult.AddMessage([VerificationResult]::Manual,
+									[MessageData]::new("Unable to fetch details of functions."));
+							
+				}
+		
+	  	}
 		return $controlResult;
     	
 	}
@@ -590,14 +679,18 @@ class AppService: SVTBase
 	{
 		
 			$appSettings = $this.WebAppDetails.SiteConfig.AppSettings
-	   		$editModeReadOnly = $null
+			$appEditMode = $null
 
 			if(($appSettings| Measure-Object).Count -gt 0)
 			{
-				$editModeReadOnly = $appSettings | Where-Object { $_.Name -eq "FUNCTION_APP_EDIT_MODE" -and $_.Value -eq "readonly"}
+				$appEditMode = $appSettings | Where-Object { $_.Name -eq "FUNCTION_APP_EDIT_MODE" }
 			}
 
-			if($null -ne $editModeReadOnly)
+			if($null -eq $appEditMode){
+				$controlResult.AddMessage([VerificationResult]::Verify,
+				[MessageData]::new("Verify that Functions app edit mode should be defined as 'readonly' for resource " + $this.ResourceContext.ResourceName));
+			}
+			elseif($appEditMode.Value -eq "readonly")
 			{
 			   $controlResult.AddMessage([VerificationResult]::Passed,
 										 [MessageData]::new("Functions app edit mode is defined as 'readonly' for resource " + $this.ResourceContext.ResourceName));
@@ -619,10 +712,15 @@ class AppService: SVTBase
 			$controlResult.AddMessage([VerificationResult]::Manual,
                                     [MessageData]::new("Control can not be validated due to insufficient access permission on resource"));
 		}
+		elseif([Helpers]::CheckMember($this.WebAppDetails,"State") -and ($this.WebAppDetails.State -eq "Stopped"))
+		{
+			$controlResult.AddMessage([VerificationResult]::Manual,
+                                    [MessageData]::new("Control can not be validated as the resource is in 'Stopped' state."));
+		}
 		else
 		{
 		$ResourceAppIdURI = [WebRequestHelper]::GetServiceManagementUrl()
-		$accessToken = [Helpers]::GetAccessToken($ResourceAppIdURI)
+		$accessToken = [ContextHelper]::GetAccessToken($ResourceAppIdURI)
 		$authorisationToken = "Bearer " + $accessToken
 		$headers = @{"Authorization"=$authorisationToken;"Content-Type"="application/json"}
 		if([Helpers]::CheckMember($this.WebAppDetails,"EnabledHostNames"))
@@ -645,47 +743,56 @@ class AppService: SVTBase
 			$AppURL = $this.FormatURL($temp[0])
 			$apiFunctionsUrl = [string]::Format("https://{0}.scm.{1}/api/functions",$this.ResourceContext.ResourceName,$AppURL)
 		}
+		$functionDetail = $null
 		#$apiFunctionsUrl = [string]::Format("https://{0}.scm.azurewebsites.net/api/functions",$this.ResourceContext.ResourceName)
-		$functionDetail = [WebRequestHelper]::InvokeGetWebRequest($apiFunctionsUrl, $headers)
-		
-			#check if functions are present in FunctionApp	
-			if([Helpers]::CheckMember($functionDetail,"config"))
+		if([FeatureFlightingManager]::GetFeatureStatus("UseAzCommandForFunctionAppDetails",$($this.SubscriptionContext.SubscriptionId)) -eq $true)
+    {
+			$functionAppDetails = Get-AzResource -ResourceGroupName $this.ResourceContext.ResourceGroupName -ResourceName $this.ResourceContext.ResourceName -ResourceType 'Microsoft.Web/sites/functions' -ApiVersion '2015-08-01' -ErrorAction SilentlyContinue
+			if($null -ne $functionAppDetails -and [Helpers]::CheckMember($functionAppDetails,"Properties"))
 			{
-			$bindingsDetail =$functionDetail.config.bindings
-	   		$authorizationLevel = $null
+				$functionDetail = $functionAppDetails | ForEach-Object{ $_.Properties } 
+			}
+    }else{
+			$functionDetail = [WebRequestHelper]::InvokeGetWebRequest($apiFunctionsUrl, $headers)
+		}
+		#check if functions are present in FunctionApp	
+		if($null -ne $functionDetail -and [Helpers]::CheckMember($functionDetail,"config"))
+		{
+		$bindingsDetail =$functionDetail.config.bindings
+			$authorizationLevel = $null
 
-			if(($bindingsDetail| Measure-Object).Count -gt 0)
-			{
-			 $bindingsDetail |	 ForEach-Object{
-				if($_.type -eq "httpTrigger" )
-					 {
-						if([Helpers]::CheckMember($_,"authLevel"))
+		if(($bindingsDetail| Measure-Object).Count -gt 0)
+		{
+			$bindingsDetail |	 ForEach-Object{
+			if($_.type -eq "httpTrigger" )
+					{
+					if([Helpers]::CheckMember($_,"authLevel"))
+						{
+								if($_.authLevel -ne 'function')
 							{
-			    				if($_.authLevel -ne 'function')
-								{
-									$authorizationLevel=$_.authLevel
-								}
-							} 
-						}
-				}
+								$authorizationLevel=$_.authLevel
+							}
+						} 
+					}
 			}
-			
-			if($null -ne $authorizationLevel)
-			{
-			   $controlResult.AddMessage([VerificationResult]::Failed,
-										 [MessageData]::new("Authorization level for all functions in a Functions app is not defined as 'Function' for resource " + $this.ResourceContext.ResourceName));
-			}
-			else
-			{
-			   $controlResult.AddMessage([VerificationResult]::Passed,
-										 [MessageData]::new("Authorization level for all functions in a Functions app is defined as 'Function' for resource  " + $this.ResourceContext.ResourceName));
-			}
-			}
-		  else
-			{
-			   $controlResult.AddMessage([VerificationResult]::Passed,
-										 [MessageData]::new("No functions are found in Functions app resource  " + $this.ResourceContext.ResourceName));
-			}
+		}
+		
+		if($null -ne $authorizationLevel)
+		{
+				$controlResult.AddMessage([VerificationResult]::Failed,
+										[MessageData]::new("Authorization level for all functions in a Functions app is not defined as 'Function' for resource " + $this.ResourceContext.ResourceName));
+		}
+		else
+		{
+				$controlResult.AddMessage([VerificationResult]::Passed,
+										[MessageData]::new("Authorization level for all functions in a Functions app is defined as 'Function' for resource  " + $this.ResourceContext.ResourceName));
+		}
+		}
+		else
+		{
+				$controlResult.AddMessage([VerificationResult]::Passed,
+										[MessageData]::new("No functions are found in Functions app resource  " + $this.ResourceContext.ResourceName));
+		}
 		}
 		return $controlResult;
     }
@@ -726,7 +833,7 @@ class AppService: SVTBase
 		return $controlResult;
     }
     hidden [ControlResult] CheckAppServiceMsiEnabled([ControlResult] $controlResult)
-	{
+	  {
 	     if($this.IsReaderRole)
 		{
 			$controlResult.AddMessage([VerificationResult]::Manual,
@@ -757,18 +864,16 @@ class AppService: SVTBase
 			  }  	  
 			  if(($null -ne $json) -and (($json | Measure-Object).Count -gt 0))
 			  {
-			     if(([Helpers]::CheckMember($json[0],"Identity")) -and ($json[0].Identity.type -eq "SystemAssigned"))
-				 {
-				   
-				    $controlResult.AddMessage([VerificationResult]::Verify,
-										 [MessageData]::new("Your app service is using Managed Service Identity(MSI). It is specifically turned On."));
-				   
-				 }
-				 else
-			     {
-			       $controlResult.AddMessage([VerificationResult]::Verify,
-										 [MessageData]::new("Your app service is not using Managed Service Identity(MSI). It is specifically turned Off."));
-			     }
+			     if(([Helpers]::CheckMember($json[0],"Identity")) -and ($json[0].Identity.type -eq "SystemAssigned" -or $json[0].Identity.type -eq "UserAssigned"))
+                 		{                  
+                    		 $controlResult.AddMessage([VerificationResult]::Passed,
+                                 [MessageData]::new("Your app service is using Managed Service Identity (MSI). It is specifically turned on. Make sure this MSI identity is used to access the resources."));
+                  		}
+                	     else
+                 	        {
+                  		 $controlResult.AddMessage([VerificationResult]::Failed,
+                                 [MessageData]::new("Your app service is not using Managed Service Identity(MSI). It is specifically turned Off."));
+                 		}
 			  }
 			  else
 			  {
@@ -791,5 +896,95 @@ class AppService: SVTBase
 		}
 		return $controlResult;
     }
+		 
+		hidden [ControlResult] CheckAppServiceTLSVersion([ControlResult] $controlResult)
+		{	
+				$requiredVersion = [System.Version] $this.ControlSettings.AppService.TLS_Version
+	
+        if($null -ne $this.SiteConfigs -and [Helpers]::CheckMember($this.SiteConfigs.Properties,"minTlsVersion")){
+					  $minTlsVersion = [System.Version]	$this.SiteConfigs.Properties.minTlsVersion
+						if($minTlsVersion -ge $requiredVersion)
+						{
+							$controlResult.VerificationResult = [VerificationResult]::Passed
+						}
+						else
+						{
+							$controlResult.VerificationResult = [VerificationResult]::Failed
+							$controlResult.AddMessage("Current Minimum TLS Version: $($minTlsVersion), Required Minimum TLS Version: $($requiredVersion)");
+							$controlResult.SetStateData("Current Minimum TLS Version",$minTlsVersion.ToString());
+						}
+				}else{
+						$controlResult.VerificationResult = [VerificationResult]::Manual
+						$controlResult.AddMessage("Unable to fetch TLS settings.");
+				}
+				return $controlResult;
+		}
+
+		hidden [ControlResult] CheckAppServiceInstalledExtensions([ControlResult] $controlResult)
+		{	
+			  try{
+					$installedExtensions = Get-AzResource -ResourceGroupName $this.ResourceContext.ResourceGroupName -ResourceType Microsoft.Web/sites/siteextensions -ResourceName $this.ResourceContext.ResourceName -ApiVersion 2018-02-01 -ErrorAction silentlycontinue
+				}
+				catch{
+					$installedExtensions = $null
+				}
+				if($installedExtensions -ne $null -and ($installedExtensions | Measure-Object).Count -gt 0)
+				{
+					$extensions = $installedExtensions | Select-Object "Name", "ResourceId"
+					$controlResult.AddMessage([VerificationResult]::Verify,
+					[MessageData]::new("Following extensions are installed on resource:",$installedExtensions));
+          $controlResult.SetStateData("Installed extensions",$extensions);
+				}
+				else
+				{
+					$controlResult.AddMessage([VerificationResult]::Passed,[MessageData]::new("No extension is installed on resource " +$this.ResourceContext.ResourceName));
+					
+				}
+				return $controlResult;
+		}
+
+		hidden [ControlResult] CheckAppServiceAccessRestriction([ControlResult] $controlResult)
+		{	
+				$ipSecurityRestrictions = $false
+				$scmIpSecurityRestrictions = 	$false
+				$controlResult.VerificationResult = [VerificationResult]::Verify
+				$scmIpSecurityRestrictionsUseMain = $this.SiteConfigs.Properties.scmIpSecurityRestrictionsUseMain
+				# Check IP restrictions for main website
+				if($null -eq $this.SiteConfigs.Properties.ipSecurityRestrictions){
+					$controlResult.AddMessage("IP rule based access restriction is not set up for app: " +$this.ResourceContext.ResourceName);
+				}else{
+					$ipSecurityRestrictions = $true
+					$controlResult.AddMessage("Following IP rule based access restriction is cofigured for app: "+$this.ResourceContext.ResourceName);
+					$controlResult.AddMessage($this.SiteConfigs.Properties.ipSecurityRestrictions);
+				}
+				# Check IP restrictions for scm website
+				if($scmIpSecurityRestrictionsUseMain -eq $true){
+					$scmIpSecurityRestrictions = $ipSecurityRestrictions
+					$controlResult.AddMessage("IP based access restriction rules are same for both scm site and main app.");
+				}elseif($null -eq $this.SiteConfigs.Properties.scmIpSecurityRestrictions){
+					$scmIpSecurityRestrictions = 	$false
+					$controlResult.AddMessage("IP based access restriction is not set up for scm site used by app.");
+				}else{
+					$ipSecurityRestrictions = $true
+					$controlResult.AddMessage("Following IP based access restriction is configured for scm site used by app:");
+					$controlResult.AddMessage($this.SiteConfigs.Properties.scmIpSecurityRestrictions);
+				}
+				return $controlResult;
+		}
+
+		hidden [ControlResult] CheckAppServiceCORSCredential([ControlResult] $controlResult)
+		{	
+				$supportCredentials = $false
+				$controlResult.VerificationResult = [VerificationResult]::Verify
+				if($null -ne $this.SiteConfigs -and [Helpers]::CheckMember( $this.SiteConfigs.Properties,"cors.supportCredentials") -and $this.SiteConfigs.Properties.cors.supportCredentials){
+					 $supportCredentials = $true	
+					 $controlResult.AddMessage("CORS Response header 'Access-Control-Allow-Credentials' is enabled for resource.");
+				}else{
+				   $controlResult.VerificationResult = [VerificationResult]::Passed
+				   $controlResult.AddMessage("CORS Response header 'Access-Control-Allow-Credentials' is disabled for resource.");
+				}
+				$controlResult.SetStateData("Response header 'Access-Control-Allow-Credentials' is set to: ",$supportCredentials);
+				return $controlResult;
+		}
 
 }

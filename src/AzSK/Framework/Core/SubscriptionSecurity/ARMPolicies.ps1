@@ -2,7 +2,7 @@ using namespace System.Management.Automation
 Set-StrictMode -Version Latest 
 
 # Class to implement Subscription ARM Policy controls 
-class ARMPolicy: CommandBase
+class ARMPolicy: AzCommandBase
 {    
 	hidden [ARMPolicyModel] $ARMPolicyObj = $null;
 	hidden [PolicyInitiative] $SubPolicyInitiative = $null;
@@ -25,7 +25,7 @@ class ARMPolicy: CommandBase
 		$this.UpdateInitiative = $updateInitiative;
 	}
 
-	hidden [PSObject[]] GetApplicableARMPolices()
+	hidden [PSObject[]] GetApplicableARMPolicies()
 	{
 		if($null -eq $this.ApplicableARMPolicies)
 		{
@@ -61,19 +61,18 @@ class ARMPolicy: CommandBase
 
 	[MessageData[]] SetARMPolicies()
     {
-		[Helpers]::RegisterResourceProviderIfNotRegistered([ARMPolicy]::PolicyProviderNamespace);
+		[ResourceHelper]::RegisterResourceProviderIfNotRegistered([ARMPolicy]::PolicyProviderNamespace);
 		[MessageData[]] $messages = @();
 		$this.RemoveDeprecatedPolicies();
 		if(($this.ARMPolicyObj.Policies | Measure-Object).Count -ne 0)
 		{
-			if($this.GetApplicableARMPolices() -ne 0)
+			if($this.GetApplicableARMPolicies() -ne 0)
 			{
-				$startMessage = [MessageData]::new("Processing AzSK ARM policies. Total policies: $($this.GetApplicableARMPolices().Count)");
+				$startMessage = [MessageData]::new("Processing AzSK ARM policies. Total policies: $($this.GetApplicableARMPolicies().Count)");
 				$messages += $startMessage;
 				$this.PublishCustomMessage($startMessage);
-				$this.PublishCustomMessage("Note: Configuring ARM policies can take about 2-3 min...", [MessageType]::Warning);				
-
-				$disabledPolicies = $this.GetApplicableARMPolices() | Where-Object { -not $_.Enabled };
+				
+				$disabledPolicies = $this.GetApplicableARMPolicies() | Where-Object { -not $_.Enabled };
 				if(($disabledPolicies | Measure-Object).Count -ne 0)
 				{
 					$disabledMessage = "Found ARM policies which are disabled. Total disabled policies: $($disabledPolicies.Count)";
@@ -82,19 +81,21 @@ class ARMPolicy: CommandBase
 				}
 
 				$enabledPolicies = @();
-				$enabledPolicies += $this.GetApplicableARMPolices() | Where-Object { $_.Enabled };
+				$enabledPolicies += $this.GetApplicableARMPolicies() | Where-Object { $_.Enabled };
 				if($enabledPolicies.Count -ne 0)
 				{
 					$messages += [MessageData]::new([Constants]::SingleDashLine + "`r`nAdding following ARM policies to the subscription. Total policies: $($enabledPolicies.Count)", $enabledPolicies);                                            								
 					$armPoliciesDefns = @{};
+					$errorCount = 0;
+					[MessageData[]] $resultMessages = @();
 					$enabledPolicies | ForEach-Object {
 						$policyName = $_.PolicyDefinitionName;
 						$armPolicy = $null;
 						try {
-							$armPolicy = Get-AzureRmPolicyDefinition -Name $policyName -ErrorAction Stop
+							$armPolicy = Get-AzPolicyDefinition -Name $policyName -ErrorAction Stop
 							try{
 						    $temp = $_;		
-							$armpolicyassignment = Get-AzureRmPolicyAssignment -Name $policyName
+							$armpolicyassignment = Get-AzPolicyAssignment -Name $policyName
 							}
 							catch{
 							$armPoliciesDefns.Add($temp,$armPolicy);
@@ -108,15 +109,24 @@ class ARMPolicy: CommandBase
 							# Add ARM policy
 							try
 							{
-								$armPolicy = New-AzureRmPolicyDefinition -Name $policyName -Description $_.Description -Policy ([string]$_.PolicyDefinition) -ErrorAction Stop
+								$armPolicy = New-AzPolicyDefinition -Name $policyName -Description $_.Description -Policy ([string]$_.PolicyDefinition) -ErrorAction Stop
 								$armPoliciesDefns.Add($_,$armPolicy);
 							}
 							catch
 							{
 								$messages += [MessageData]::new("Error while adding ARM policy [$policyName] to the subscription", $_, [MessageType]::Error);
+                                $errorCount += 1;
 							}
 						}							
 					};
+					if($errorCount -eq $enabledPolicies.Count )
+					{
+						$resultMessages += [MessageData]::new("No AzSK ARM policies were added to the subscription due to some error. See the log file for details.`r`n" + [Constants]::SingleDashLine, [MessageType]::Error);
+					}
+					elseif($errorCount -gt 0)
+					{
+						$resultMessages += [MessageData]::new("$errorCount/$($enabledPolicies.Count) ARM policy(ies) have not been added to the subscription. See the log file for details.", [MessageType]::Error);
+					}
 					$errorCount = 0;
 					$currentCount = 0;
 					if(($armPoliciesDefns.Keys | Measure-Object).Count -gt 0)
@@ -130,7 +140,7 @@ class ARMPolicy: CommandBase
 							# Add ARM policy
 							try
 							{								
-								New-AzureRmPolicyAssignment -Name $policyName -PolicyDefinition $armPolicyDefn  -Scope $armPolicy.Scope -ErrorAction Stop | Out-Null
+								New-AzPolicyAssignment -Name $policyName -PolicyDefinition $armPolicyDefn  -Scope $armPolicy.Scope -ErrorAction Stop | Out-Null
 							}
 							catch
 							{
@@ -140,12 +150,11 @@ class ARMPolicy: CommandBase
 							$this.CommandProgress($enabledPolicies.Count, $currentCount, 2);
 						};
 					}
-					[MessageData[]] $resultMessages = @();
 					if($errorCount -eq 0)
 					{
 						#setting the version tag at AzSKRG
 						$azskRGName = [ConfigurationManager]::GetAzSKConfigData().AzSKRGName;
-						[Helpers]::SetResourceGroupTags($azskRGName,@{[Constants]::ARMPolicyConfigVersionTagName=$this.ARMPolicyObj.Version}, $false)
+						[ResourceGroupHelper]::SetResourceGroupTags($azskRGName,@{[Constants]::ARMPolicyConfigVersionTagName=$this.ARMPolicyObj.Version}, $false)
 					
 					$resultMessages += [MessageData]::new("All AzSK ARM policies have been added to the subscription successfully`r`n" + [Constants]::SingleDashLine, [MessageType]::Update);
 					}
@@ -181,7 +190,7 @@ class ARMPolicy: CommandBase
 				try
 				{
 					$PolicyName = $_;
-					$PolicyDefn = Get-AzureRmPolicyDefinition -Name $PolicyName -ErrorAction SilentlyContinue
+					$PolicyDefn = Get-AzPolicyDefinition -Name $PolicyName -ErrorAction SilentlyContinue
 					if($null -ne $PolicyDefn)
 					{
 						$DeprecatedPolicyDefns += $PolicyDefn;
@@ -197,7 +206,7 @@ class ARMPolicy: CommandBase
 				$assignments = @();
 				$DeprecatedPolicyDefns | ForEach-Object {
 					$defn = $_;
-					$tassignment = Get-AzureRmPolicyAssignment -PolicyDefinitionId $defn.policyDefinitionId  -ErrorAction SilentlyContinue
+					$tassignment = Get-AzPolicyAssignment -PolicyDefinitionId $defn.policyDefinitionId  -ErrorAction SilentlyContinue
 					if($null -ne $tassignment)
 					{
 						$assignments += $tassignment;
@@ -207,7 +216,7 @@ class ARMPolicy: CommandBase
 				{
 					$assignments | ForEach-Object {
 						$assigment = $_;
-						Remove-AzureRmPolicyAssignment -Scope $assigment.properties.scope -Name $assigment.Name -ErrorAction SilentlyContinue
+						Remove-AzPolicyAssignment -Scope $assigment.properties.scope -Name $assigment.Name -ErrorAction SilentlyContinue
 					}						
 					Start-Sleep -Seconds 15
 				}				
@@ -215,7 +224,7 @@ class ARMPolicy: CommandBase
 					try
 					{
 						$defn = $_;
-						Remove-AzureRmPolicyDefinition -Id $defn.PolicyDefinitionId -Force -ErrorAction SilentlyContinue		
+						Remove-AzPolicyDefinition -Id $defn.PolicyDefinitionId -Force -ErrorAction SilentlyContinue		
 					}
 					catch
 					{
@@ -233,7 +242,7 @@ class ARMPolicy: CommandBase
 			$deprecatedInitiatives = @();
 			$this.SubPolicyInitiative.DeprecatedInitiatives | ForEach-Object {
 				$depInitiative = $_;
-				$deprecatedInitiative = Get-AzureRmPolicySetDefinition -Name $depInitiative -ErrorAction SilentlyContinue
+				$deprecatedInitiative = Get-AzPolicySetDefinition -Name $depInitiative -ErrorAction SilentlyContinue
 				if($null -ne $deprecatedInitiative)
 				{
 					$deprecatedInitiatives += $deprecatedInitiative;
@@ -244,7 +253,7 @@ class ARMPolicy: CommandBase
 				$deprecatedInitiatives | ForEach-Object {
 					$depInitiative = $_;
 					$assignments = @();
-					$tassignment = Get-AzureRmPolicyAssignment -PolicyDefinitionId $depInitiative.PolicySetDefinitionId -ErrorAction SilentlyContinue
+					$tassignment = Get-AzPolicyAssignment -PolicyDefinitionId $depInitiative.PolicySetDefinitionId -ErrorAction SilentlyContinue
 					if(($tassignment | Measure-Object).Count -gt 0)
 					{
 						$assignments += $tassignment
@@ -253,7 +262,7 @@ class ARMPolicy: CommandBase
 					{
 						$assignments | ForEach-Object {						
 							$assignment = $_;
-							Remove-AzureRmPolicyAssignment -Scope $assignment.Scope -Name $assignment.Name -Force -ErrorAction SilentlyContinue
+							Remove-AzPolicyAssignment -Scope $assignment.Scope -Name $assignment.Name -Force -ErrorAction SilentlyContinue
 						}
 					}
 				}
@@ -261,7 +270,7 @@ class ARMPolicy: CommandBase
 				Start-Sleep -Seconds 15
 				$deprecatedInitiatives | ForEach-Object {
 					$depInitiative = $_;
-					Remove-AzureRmPolicySetDefinition -Name $depInitiative.Name -Force -ErrorAction SilentlyContinue					
+					Remove-AzPolicySetDefinition -Name $depInitiative.Name -Force -ErrorAction SilentlyContinue					
 				}
 			}		
 		}
@@ -272,14 +281,14 @@ class ARMPolicy: CommandBase
 		[MessageData[]] $messages = @();
 		if(($this.ARMPolicyObj.Policies | Measure-Object).Count -ne 0)
 		{
-			if($this.GetApplicableARMPolices() -ne 0)
+			if($this.GetApplicableARMPolicies() -ne 0)
 			{
-				$startMessage = [MessageData]::new("Processing ARM policies. Tags:[$([string]::Join(",", $this.FilterTags))]. Total policies: $($this.GetApplicableARMPolices().Count)");
+				$startMessage = [MessageData]::new("Processing ARM policies. Tags:[$([string]::Join(",", $this.FilterTags))]. Total policies: $($this.GetApplicableARMPolicies().Count)");
 				$messages += $startMessage;
 				$this.PublishCustomMessage($startMessage);
 				$this.PublishCustomMessage("Note: Removing ARM policies can take few minutes depending on number of policies to be processed...", [MessageType]::Warning);				
 
-				$disabledPolicies = $this.GetApplicableARMPolices() | Where-Object { -not $_.Enabled };
+				$disabledPolicies = $this.GetApplicableARMPolicies() | Where-Object { -not $_.Enabled };
 				if(($disabledPolicies | Measure-Object).Count -ne 0)
 				{
 					$disabledMessage = "Found ARM policies which are disabled and will not be removed. Total disabled policies: $($disabledPolicies.Count)";
@@ -288,12 +297,12 @@ class ARMPolicy: CommandBase
 				}
 
 				$currentPolicies = @();
-				$currentPolicies += Get-AzureRmPolicyAssignment | Select-Object -Property Name | Select-Object -ExpandProperty Name
+				$currentPolicies += Get-AzPolicyAssignment | Select-Object -Property Name | Select-Object -ExpandProperty Name
 	
 				$enabledPolicies = @();
 				if($currentPolicies.Count -ne 0)
 				{
-					$enabledPolicies += $this.GetApplicableARMPolices() | Where-Object { $_.Enabled -and $currentPolicies -contains $_.policyDefinitionName };
+					$enabledPolicies += $this.GetApplicableARMPolicies() | Where-Object { $_.Enabled -and $currentPolicies -contains $_.policyDefinitionName };
 				}
 				
 				if($enabledPolicies.Count -ne 0)
@@ -308,9 +317,9 @@ class ARMPolicy: CommandBase
 						# Remove ARM policy
 						try
 						{
-							Remove-AzureRmPolicyAssignment -Name $_.PolicyDefinitionName -Scope $_.Scope -ErrorAction Stop | Out-Null
+							Remove-AzPolicyAssignment -Name $_.PolicyDefinitionName -Scope $_.Scope -ErrorAction Stop | Out-Null
 							Start-Sleep -Seconds 15
-							Remove-AzureRmPolicyDefinition -Name $_.PolicyDefinitionName -Force -ErrorAction Stop | Out-Null           
+							Remove-AzPolicyDefinition -Name $_.PolicyDefinitionName -Force -ErrorAction Stop | Out-Null           
 						}
 						catch
 						{
@@ -318,7 +327,7 @@ class ARMPolicy: CommandBase
 							$errorCount += 1;
 						}
 
-						$this.CommandProgress($enabledPolicies.Count, $currentCount, 2);
+						
 					};
 
 					[MessageData[]] $resultMessages = @();
@@ -326,8 +335,9 @@ class ARMPolicy: CommandBase
 					{
 						#removing the version tag at AzSKRG
 						$azskRGName = [ConfigurationManager]::GetAzSKConfigData().AzSKRGName;
-						[Helpers]::SetResourceGroupTags($azskRGName,@{[Constants]::ARMPolicyConfigVersionTagName=$this.ARMPolicyObj.Version}, $true)
+						[ResourceGroupHelper]::SetResourceGroupTags($azskRGName,@{[Constants]::ARMPolicyConfigVersionTagName=$this.ARMPolicyObj.Version}, $true)
 						
+						$this.CommandProgress($enabledPolicies.Count, $currentCount, 2);
 						$resultMessages += [MessageData]::new("All ARM policies have been removed from the subscription successfully`r`n" + [Constants]::SingleDashLine, [MessageType]::Update);
 					}
 					elseif($errorCount -eq $enabledPolicies.Count)
@@ -348,7 +358,7 @@ class ARMPolicy: CommandBase
 					$messages += $noPolicyMessage;
 					$this.PublishCustomMessage($noPolicyMessage);
 					$azskRGName = [ConfigurationManager]::GetAzSKConfigData().AzSKRGName;
-					[Helpers]::SetResourceGroupTags($azskRGName,@{[Constants]::ARMPolicyConfigVersionTagName=$this.ARMPolicyObj.Version}, $true)
+					[ResourceGroupHelper]::SetResourceGroupTags($azskRGName,@{[Constants]::ARMPolicyConfigVersionTagName=$this.ARMPolicyObj.Version}, $true)
 				}
 			}
 			else
@@ -367,7 +377,7 @@ class ARMPolicy: CommandBase
     {	
 		[MessageData[]] $messages = @();
 
-		$policies = Get-AzureRmPolicyDefinition
+		$policies = Get-AzPolicyDefinition
 		if(($policies | Measure-Object).Count -le 0)
 		{
 			#return if no policies are found
@@ -381,7 +391,7 @@ class ARMPolicy: CommandBase
 			return;
 		}
 
-		$policyAssignments = Get-AzureRmPolicyAssignment -Scope $scope
+		$policyAssignments = Get-AzPolicyAssignment -Scope $scope
 
 		$filteredPolicies | ForEach-Object {
 			try{
@@ -391,7 +401,7 @@ class ARMPolicy: CommandBase
 				if(($subPolicyAssignments | Measure-Object).Count -gt 0)
 				{
 					$subPolicyAssignments | ForEach-Object {
-						Remove-AzureRmPolicyAssignment -Name $_.Name -Scope $_.properties.scope -ErrorAction Stop | Out-Null
+						Remove-AzPolicyAssignment -Name $_.Name -Scope $_.properties.scope -ErrorAction Stop | Out-Null
 					}
 				}						
 			}
@@ -405,7 +415,7 @@ class ARMPolicy: CommandBase
 		$filteredPolicies | ForEach-Object {
 			try{
 				$policy = $_;
-				Remove-AzureRmPolicyDefinition -Id $policy.PolicyDefinitionId -Force -ErrorAction Stop | Out-Null
+				Remove-AzPolicyDefinition -Id $policy.PolicyDefinitionId -Force -ErrorAction Stop | Out-Null
 			}
 			catch
 			{
@@ -433,10 +443,10 @@ class ARMPolicy: CommandBase
 					try
 					{			
 						#check if initiative already exists
-						$initiative = Get-AzureRmPolicySetDefinition -Name $initiativeName -ErrorAction SilentlyContinue;
+						$initiative = Get-AzPolicySetDefinition -Name $initiativeName -ErrorAction SilentlyContinue;
 						if(($initiative|Measure-Object).Count -gt 0)
 						{
-							$initiativeAssignment = Get-AzureRmPolicyAssignment -PolicyDefinitionId $initiative.PolicySetDefinitionId
+							$initiativeAssignment = Get-AzPolicyAssignment -PolicyDefinitionId $initiative.PolicySetDefinitionId
 						}
 					}
 					catch
@@ -450,14 +460,14 @@ class ARMPolicy: CommandBase
 					{
 						$this.PublishCustomMessage("Creating new AzSK Initiative...", [MessageType]::Update);		
 						$PolicyDefnitions = $this.SubPolicyInitiative.Policies | ConvertTo-Json -depth 10 | Out-String
-						New-AzureRmPolicySetDefinition -Name $initiativeName -DisplayName $this.SubPolicyInitiative.DisplayName -Description $this.SubPolicyInitiative.Description -PolicyDefinition $PolicyDefnitions | Out-Null
+						New-AzPolicySetDefinition -Name $initiativeName -DisplayName $this.SubPolicyInitiative.DisplayName -Description $this.SubPolicyInitiative.Description -PolicyDefinition $PolicyDefnitions | Out-Null
 						Start-Sleep -Seconds 15
 						
 					}
 					elseif($this.UpdateInitiative) {
 						$this.PublishCustomMessage("Updating AzSK Initiative...", [MessageType]::Update);
 						$PolicyDefnitions = $this.SubPolicyInitiative.Policies | ConvertTo-Json -depth 10 | Out-String
-						Set-AzureRmPolicySetDefinition -Name $this.SubPolicyInitiative.Name -DisplayName $this.SubPolicyInitiative.DisplayName -Description $this.SubPolicyInitiative.Description -PolicyDefinition $PolicyDefnitions | Out-Null
+						Set-AzPolicySetDefinition -Name $this.SubPolicyInitiative.Name -DisplayName $this.SubPolicyInitiative.DisplayName -Description $this.SubPolicyInitiative.Description -PolicyDefinition $PolicyDefnitions | Out-Null
 						Start-Sleep -Seconds 15						
 					}
 					elseif($null -ne $initiative)
@@ -466,8 +476,8 @@ class ARMPolicy: CommandBase
 					}	
 					if($null -eq $initiativeAssignment)
 					{
-						$setDefnObj = Get-AzureRmPolicySetDefinition -Name $initiativeName -ErrorAction SilentlyContinue;
-						New-AzureRmPolicyAssignment -Name $assignmentName -DisplayName $assignmentDisplayName -Scope $scope -PolicySetDefinition $setDefnObj 
+						$setDefnObj = Get-AzPolicySetDefinition -Name $initiativeName -ErrorAction SilentlyContinue;
+						New-AzPolicyAssignment -Name $assignmentName -DisplayName $assignmentDisplayName -Scope $scope -PolicySetDefinition $setDefnObj 
 					}
 					#todo: CA permission update	if default CA			
 				}				
@@ -486,7 +496,7 @@ class ARMPolicy: CommandBase
 	[string[]] ValidatePolicyConfiguration()
 	{		
 		$NonCompliantObjects = @();
-		$enabledPolicies = $this.GetApplicableARMPolices() | Where-Object { $_.Enabled };
+		$enabledPolicies = $this.GetApplicableARMPolicies() | Where-Object { $_.Enabled };
 		if($null -ne $this.ARMPolicyObj -and ($enabledPolicies | Measure-Object).Count -gt 0)
 		{
 			$RequiredPolicyDefns = @();			
@@ -494,7 +504,7 @@ class ARMPolicy: CommandBase
 				$Policy = $_;
 				try
 				{
-					$PolicyDefn = Get-AzureRmPolicyDefinition -Name $Policy.policyDefinitionName -ErrorAction SilentlyContinue
+					$PolicyDefn = Get-AzPolicyDefinition -Name $Policy.policyDefinitionName -ErrorAction Stop
 					if($null -ne $PolicyDefn)
 					{
 						$RequiredPolicyDefns += $PolicyDefn;
@@ -510,7 +520,7 @@ class ARMPolicy: CommandBase
 			{
 				$RequiredPolicyDefns | ForEach-Object {
 					$defn = $_;
-					$tassignment = Get-AzureRmPolicyAssignment -PolicyDefinitionId $defn.policyDefinitionId  -ErrorAction SilentlyContinue
+					$tassignment = Get-AzPolicyAssignment -PolicyDefinitionId $defn.policyDefinitionId  -ErrorAction SilentlyContinue
 					if($null -eq $tassignment)
 					{
 						$NonCompliantObjects += ("Policy :[" + $defn.Name + "]");
@@ -530,7 +540,7 @@ class ARMPolicy: CommandBase
 					$initiative = $null;
 					try
 					{			
-						$initiative = Get-AzureRmPolicySetDefinition -Name $initiativeName -ErrorAction SilentlyContinue;
+						$initiative = Get-AzPolicySetDefinition -Name $initiativeName -ErrorAction SilentlyContinue;
 					}
 					catch
 					{

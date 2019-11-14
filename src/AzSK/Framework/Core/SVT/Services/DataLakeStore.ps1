@@ -1,13 +1,7 @@
 Set-StrictMode -Version Latest 
-class DataLakeStore: SVTBase
+class DataLakeStore: AzSVTBase
 {       
     hidden [PSObject] $ResourceObject;
-
-    DataLakeStore([string] $subscriptionId, [string] $resourceGroupName, [string] $resourceName): 
-        Base($subscriptionId, $resourceGroupName, $resourceName) 
-    { 
-        $this.GetResourceObject();
-    }
 
     DataLakeStore([string] $subscriptionId, [SVTResource] $svtResource): 
         Base($subscriptionId, $svtResource) 
@@ -18,7 +12,7 @@ class DataLakeStore: SVTBase
     hidden [PSObject] GetResourceObject()
     {
         if (-not $this.ResourceObject) {
-            $this.ResourceObject = Get-AzureRmDataLakeStoreAccount -Name $this.ResourceContext.ResourceName `
+            $this.ResourceObject = Get-AzDataLakeStoreAccount -Name $this.ResourceContext.ResourceName `
                                             -ResourceGroupName $this.ResourceContext.ResourceGroupName
             if(-not $this.ResourceObject)
             {
@@ -73,7 +67,7 @@ class DataLakeStore: SVTBase
 			$otherACLDetails = $null 
 			try
 			{
-				$rootAcl=Get-AzureRmDataLakeStoreItemAclEntry -Account $this.ResourceContext.ResourceName -Path "/" -ErrorAction Stop
+				$rootAcl=Get-AzDataLakeStoreItemAclEntry -Account $this.ResourceContext.ResourceName -Path "/" -ErrorAction Stop
 			}
 			catch
 			{

@@ -1,13 +1,7 @@
 Set-StrictMode -Version Latest 
-class ContainerInstances: SVTBase
+class ContainerInstances: AzSVTBase
 {       
     hidden [PSObject] $ResourceObject;
-
-    ContainerInstances([string] $subscriptionId, [string] $resourceGroupName, [string] $resourceName): 
-        Base($subscriptionId, $resourceGroupName, $resourceName) 
-    { 
-        $this.GetResourceObject();
-    }
 
     ContainerInstances([string] $subscriptionId, [SVTResource] $svtResource): 
         Base($subscriptionId, $svtResource) 
@@ -22,7 +16,7 @@ class ContainerInstances: SVTBase
            # $this.ResourceObject = Get-AzureRmContainerGroup -Name $this.ResourceContext.ResourceName `
 											#-ResourceGroupName $this.ResourceContext.ResourceGroupName -ErrorAction SilentlyContinue
 
-            $this.ResourceObject = Get-AzureRmResource -Name $this.ResourceContext.ResourceName `
+            $this.ResourceObject = Get-AzResource -Name $this.ResourceContext.ResourceName `
 											-ResourceGroupName $this.ResourceContext.ResourceGroupName -ExpandProperties
 
             if(-not $this.ResourceObject)

@@ -1,14 +1,7 @@
 Set-StrictMode -Version Latest 
-class KubernetesService: SVTBase
+class KubernetesService: AzSVTBase
 {
-
 	hidden [PSObject] $ResourceObject;
-	
-	KubernetesService([string] $subscriptionId, [string] $resourceGroupName, [string] $resourceName): 
-        Base($subscriptionId, $resourceGroupName, $resourceName) 
-    { 
-		$this.GetResourceObject();
-    }
 
     KubernetesService([string] $subscriptionId, [SVTResource] $svtResource): 
         Base($subscriptionId, $svtResource) 
@@ -21,7 +14,7 @@ class KubernetesService: SVTBase
         if (-not $this.ResourceObject) 
 		{
 			$ResourceAppIdURI = [WebRequestHelper]::GetResourceManagerUrl();
-            $AccessToken = [Helpers]::GetAccessToken($ResourceAppIdURI)
+            $AccessToken = [ContextHelper]::GetAccessToken($ResourceAppIdURI)
 			if($null -ne $AccessToken)
 			{
 
@@ -91,12 +84,54 @@ class KubernetesService: SVTBase
 	{
 		if(([Helpers]::CheckMember($this.ResourceObject,"Properties")) -and [Helpers]::CheckMember($this.ResourceObject.Properties,"kubernetesVersion"))
 		{
-			$resourceKubernetVersion = [System.Version] $this.ResourceObject.Properties.kubernetesVersion
-			$requiredKubernetsVersion = [System.Version] $this.ControlSettings.KubernetesService.kubernetesVersion
+			$requiredKubernetesVersion = $null
+			$requiredKubernetesVersionPresent = $false
+			<#
+		    $ResourceAppIdURI = [WebRequestHelper]::GetResourceManagerUrl();
+            $AccessToken = [ContextHelper]::GetAccessToken($ResourceAppIdURI)
+			$header = "Bearer " + $AccessToken
+			$headers = @{"Authorization"=$header;"Content-Type"="application/json";}
 
-			if($resourceKubernetVersion -lt $requiredKubernetsVersion)
+			$uri=[system.string]::Format("{0}subscriptions/{1}/resourceGroups/{2}/providers/Microsoft.ContainerService/managedClusters/{3}/upgradeProfiles/default?api-version=2018-03-31",$ResourceAppIdURI,$this.SubscriptionContext.SubscriptionId, $this.ResourceContext.ResourceGroupName, $this.ResourceContext.ResourceName)
+			$result = ""
+			$err = $null
+			try {
+				$propertiesToReplace = @{}
+				$propertiesToReplace.Add("httpapplicationroutingzonename", "_httpapplicationroutingzonename")
+				$result = [WebRequestHelper]::InvokeWebRequest([Microsoft.PowerShell.Commands.WebRequestMethod]::Get, $uri, $headers, $null, $null, $propertiesToReplace); 
+				if(($null -ne $result) -and (($result | Measure-Object).Count -gt 0))
+				{
+					$upgradeProfile = $result.properties.controlPlaneProfile.upgrades
+					$requiredKubernetsVersion = "0.0.0"
+					$upgradeProfile | Foreach-Object { 
+						if([System.Version] $requiredKubernetsVersion -le [System.Version] $_)
+						{ 
+							$requiredKubernetsVersion = $_
+						} 
+					}
+					$requiredKubernetsVersion = [System.Version] $requiredKubernetsVersion
+				}
+			}
+			catch{
+				#If any exception occurs, get required kubernetes version from config
+				$requiredKubernetsVersion = [System.Version] $this.ControlSettings.KubernetesService.kubernetesVersion
+			}
+			#>
+			$supportedKubernetesVersion = $this.ControlSettings.KubernetesService.kubernetesVersion
+			$resourceKubernetesVersion = [System.Version] $this.ResourceObject.Properties.kubernetesVersion
+			$supportedKubernetesVersion | ForEach-Object {
+                if($resourceKubernetesVersion -eq [System.Version] $_){
+					$requiredKubernetesVersionPresent = $true
+				}
+			}
+
+			if(-not $requiredKubernetesVersionPresent)
 			{
-				$controlResult.VerificationResult = [VerificationResult]::Failed
+				$controlResult.AddMessage([VerificationResult]::Failed,
+										[MessageData]::new("AKS cluster is not running on required Kubernetes version."));
+				$controlResult.AddMessage([MessageData]::new("Current Kubernetes version: ", $resourceKubernetesVersion.ToString()));
+				$controlResult.AddMessage([MessageData]::new("Kubernetes cluster must be running on any one of the following versions: ", $supportedKubernetesVersion));
+
 			}
 			else
 			{
@@ -111,12 +146,12 @@ class KubernetesService: SVTBase
 	{
 		if([Helpers]::CheckMember($this.ResourceObject,"Properties"))
 		{
-			if([Helpers]::CheckMember($this.ResourceObject.Properties,"omsagent") -and [Helpers]::CheckMember($this.ResourceObject.Properties.omsagent,"config"))
+			if([Helpers]::CheckMember($this.ResourceObject.Properties,"addonProfiles.omsagent") -and [Helpers]::CheckMember($this.ResourceObject.Properties.addonProfiles.omsagent,"config"))
 			{
-				if($this.ResourceObject.Properties.omsagent)
+				if($this.ResourceObject.Properties.addonProfiles.omsagent.config -and $this.ResourceObject.Properties.addonProfiles.omsagent.enabled -eq $true)
 				{
 					$controlResult.AddMessage([VerificationResult]::Passed,
-										[MessageData]::new("Configuration of monitoring agent for resource " + $this.ResourceObject.name + "is ", $this.ResourceObject.Properties.omsagent));
+										[MessageData]::new("Configuration of monitoring agent for resource " + $this.ResourceObject.name + " is ", $this.ResourceObject.Properties.addonProfiles.omsagent));
 				}
 				else
 				{
@@ -139,7 +174,7 @@ class KubernetesService: SVTBase
 		if([Helpers]::CheckMember($this.ResourceObject,"Properties") -and [Helpers]::CheckMember($this.ResourceObject.Properties,"nodeResourceGroup"))
 		{
 			$nodeRG = $this.ResourceObject.Properties.nodeResourceGroup
-			$vms = Get-AzureRmVM -ResourceGroupName $nodeRG -WarningAction SilentlyContinue 
+			$vms = Get-AzVM -ResourceGroupName $nodeRG -WarningAction SilentlyContinue 
 			if(($vms | Measure-Object).Count -gt 0)
 			{
 				$isManual = $false
@@ -154,10 +189,10 @@ class KubernetesService: SVTBase
 				{
 					$vmObject.NetworkProfile.NetworkInterfaces | 
 					ForEach-Object {          
-						$currentNic = Get-AzureRmResource -ResourceId $_.Id -ErrorAction SilentlyContinue
+						$currentNic = Get-AzResource -ResourceId $_.Id -ErrorAction SilentlyContinue
 						if($currentNic)
 						{
-							$nicResource = Get-AzureRmNetworkInterface -Name $currentNic.Name `
+							$nicResource = Get-AzNetworkInterface -Name $currentNic.Name `
 												-ResourceGroupName $currentNic.ResourceGroupName `
 												-ExpandResource NetworkSecurityGroup `
 												-ErrorAction SilentlyContinue
@@ -173,7 +208,7 @@ class KubernetesService: SVTBase
 					ForEach-Object {	
 					try
 					{
-						$effectiveNSG = Get-AzureRmEffectiveNetworkSecurityGroup -NetworkInterfaceName $_.Name -ResourceGroupName $_.ResourceGroupName -WarningAction SilentlyContinue -ErrorAction Stop
+						$effectiveNSG = Get-AzEffectiveNetworkSecurityGroup -NetworkInterfaceName $_.Name -ResourceGroupName $_.ResourceGroupName -WarningAction SilentlyContinue -ErrorAction Stop
 					}
 					catch
 					{
@@ -297,5 +332,24 @@ class KubernetesService: SVTBase
 			}
 		}
 		return $vulnerableRules;
+	}
+
+	hidden [controlresult[]] CheckHTTPAppRouting([controlresult] $controlresult)
+	{
+        if([Helpers]::CheckMember($this.ResourceObject,"Properties"))
+		{
+			if([Helpers]::CheckMember($this.ResourceObject.Properties,"Addonprofiles.httpApplicationRouting") -and $this.ResourceObject.Properties.Addonprofiles.httpApplicationRouting.enabled -eq $true)
+			{
+				
+				$controlResult.AddMessage([VerificationResult]::Failed, "HTTP application routing is 'Enabled' for this cluster.");
+				
+			}
+			else
+			{
+				$controlResult.AddMessage([VerificationResult]::Passed, "HTTP application routing is 'Disabled' for this cluster.");
+			}
+		}
+
+		return $controlResult;
 	}
 }

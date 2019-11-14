@@ -1,6 +1,6 @@
 ﻿#using namespace Microsoft.Azure.Commands.Search.Models
 Set-StrictMode -Version Latest
-class SubscriptionCore: SVTBase
+class SubscriptionCore: AzSVTBase
 {
 	hidden [AzureSecurityCenter] $ASCSettings
 	hidden [ManagementCertificate[]] $ManagementCertificates
@@ -12,10 +12,13 @@ class SubscriptionCore: SVTBase
 	hidden [PSObject] $CurrentContext;
 	hidden [bool] $HasGraphAPIAccess;
 	hidden [PSObject] $MisConfiguredASCPolicies;
+	hidden [PSObject] $MisConfiguredOptionalASCPolicies;
 	hidden [SecurityCenter] $SecurityCenterInstance;
 	hidden [string[]] $SubscriptionMandatoryTags = @();
 	hidden [System.Collections.Generic.List[TelemetryRBAC]] $PIMAssignments;
 	hidden [System.Collections.Generic.List[TelemetryRBAC]] $permanentAssignments;
+	hidden [System.Collections.Generic.List[TelemetryRBAC]] $RGLevelPIMAssignments;
+	hidden [System.Collections.Generic.List[TelemetryRBAC]] $RGLevelPermanentAssignments;
 	hidden [CustomData] $CustomObject;
 
 	SubscriptionCore([string] $subscriptionId):
@@ -27,7 +30,7 @@ class SubscriptionCore: SVTBase
 	hidden [void] GetResourceObject()
 	{
 		$this.ASCSettings = [AzureSecurityCenter]::new()
-		$this.CurrentContext = [Helpers]::GetCurrentRMContext();
+		$this.CurrentContext = [ContextHelper]::GetCurrentRMContext();
 		$this.MandatoryAccounts = $null
 		$this.RoleAssignments = $null
 		$this.ApprovedAdmins = $null
@@ -38,10 +41,11 @@ class SubscriptionCore: SVTBase
 		#Compute the policies ahead to get the security Contact Phone number and email id
 		$this.SecurityCenterInstance = [SecurityCenter]::new($this.SubscriptionContext.SubscriptionId,$false);
 		$this.MisConfiguredASCPolicies = $this.SecurityCenterInstance.CheckASCCompliance();
+		$this.MisConfiguredOptionalASCPolicies = $this.SecurityCenterInstance.CheckOptionalSecurityPolicySettings();
 
 		#Fetch AzSKRGTags
 		$azskRG = [ConfigurationManager]::GetAzSKConfigData().AzSKRGName;
-		$azskRGTags = [Helpers]::GetResourceGroupTags($azskRG) ;
+		$azskRGTags = [ResourceGroupHelper]::GetResourceGroupTags($azskRG) ;
 
 		[hashtable] $subscriptionMetada = @{}
 		$subscriptionMetada.Add("HasGraphAccess",$this.HasGraphAPIAccess);
@@ -50,7 +54,24 @@ class SubscriptionCore: SVTBase
 		$subscriptionMetada.Add("FeatureVersions", $azskRGTags);
 		$this.SubscriptionContext.SubscriptionMetadata = $subscriptionMetada;
 		$this.SubscriptionMandatoryTags += [ConfigurationManager]::GetAzSKConfigData().SubscriptionMandatoryTags;
+
 	}
+
+	[ControlItem[]] ApplyServiceFilters([ControlItem[]] $controls)
+	{
+		$result = $controls;
+
+		#Scan resource group persistent access control only when scan source is equal to CA. We are filtering this control due to performance issue.
+		$isRGPersistentAccessCheckEnabled = [FeatureFlightingManager]::GetFeatureStatus("EnableResourceGroupPersistentAccessCheck",$($this.SubscriptionContext.SubscriptionId))
+		if($isRGPersistentAccessCheckEnabled -eq $false)
+		{
+			$result = $result | Where-Object { $_.Tags -notcontains "RGPersistentAccess" }
+		}
+		
+		return $result;
+	}
+
+
 	hidden [ControlResult] CheckSubscriptionAdminCount([ControlResult] $controlResult)
 	{
 		$this.GetRoleAssignments()
@@ -60,10 +81,14 @@ class SubscriptionCore: SVTBase
 		$scope = $this.SubscriptionContext.Scope;
 
 		$SubAdmins = @();
-		$SubAdmins += $this.RoleAssignments | Where-Object { $_.RoleDefinitionName -eq 'CoAdministrator' `
-																				-or $_.RoleDefinitionName -like '*ServiceAdministrator*' `
-																				-or ($_.RoleDefinitionName -eq 'Owner' -and $_.Scope -eq $scope)}
-		
+		$SubAdmins += $this.RoleAssignments | Where-Object { ($_.RoleDefinitionName -eq 'CoAdministrator' `
+			-or $_.RoleDefinitionName -like '*ServiceAdministrator*' `
+			-or $_.RoleDefinitionName -eq 'Owner') -and $_.Scope -eq $scope}
+
+		#Commented the below code since Co-Admin can exist independently now.
+		#Excluded the Co-Administrator since one couldn't be Co-admin without having the Owner privileges.
+		#$SubAdmins += $this.RoleAssignments | Where-Object { ($_.RoleDefinitionName -like '*ServiceAdministrator*' `
+		#	-or $_.RoleDefinitionName -eq 'Owner') -and $_.Scope -eq $scope}
 		if($this.HasGraphAPIAccess -eq $false)
 		{
 			$this.PublishCustomMessage("Current Azure login context doesn't have graph api access");
@@ -99,11 +124,11 @@ class SubscriptionCore: SVTBase
 			}
 		}
 
-		$controlResult.AddMessage("There are a total of $($SubAdmins.Count) admin/owner accounts in your subscription`r`nOf these, the following $($ClientSubAdmins.Count) admin/owner accounts are not from a central team.", ($ClientSubAdmins | Select-Object DisplayName,SignInName,ObjectType, ObjectId));
+		$controlResult.AddMessage("There are a total of $($SubAdmins.Count) admin/owner accounts in your subscription`r`nOf these, the following $($ClientSubAdmins.Count) admin/owner accounts are not from a central team.", ($ClientSubAdmins | Select-Object DisplayName, SignInName, ObjectType, ObjectId, RoleDefinitionName));
 
 		if(($ApprovedSubAdmins | Measure-Object).Count -gt 0)
 		{
-			$controlResult.AddMessage("The following $($ApprovedSubAdmins.Count) admin/owner (approved) accounts are from a central team:`r`n", ($ApprovedSubAdmins | Select-Object DisplayName, SignInName, ObjectType, ObjectId));
+			$controlResult.AddMessage("The following $($ApprovedSubAdmins.Count) admin/owner (approved) accounts are from a central team:`r`n", ($ApprovedSubAdmins | Select-Object DisplayName, SignInName, ObjectType, ObjectId, RoleDefinitionName));
 		}
 		$controlResult.AddMessage("Note: Approved central team accounts don't count against your limit");
 
@@ -112,7 +137,8 @@ class SubscriptionCore: SVTBase
 			$controlResult.VerificationResult = [VerificationResult]::Failed
 			$controlResult.AddMessage("Number of admins/owners configured at subscription scope are more than the approved limit: $($this.ControlSettings.NoOfApprovedAdmins). Total: " + $ClientSubAdmins.Count);
 		}
-		else {
+		else
+		{
 			$controlResult.AddMessage([VerificationResult]::Passed,
 										"Number of admins/owners configured at subscription scope are with in approved limit: $($this.ControlSettings.NoOfApprovedAdmins). Total: " + $ClientSubAdmins.Count);
 		}
@@ -284,8 +310,19 @@ class SubscriptionCore: SVTBase
 		{
 			$this.GetRoleAssignments()
 			Set-Variable -Name liveAccounts -Scope Local
+			$liveAccounts =@()
 
-			$liveAccounts = [array]($this.RoleAssignments | Where-Object {$_.SignInName -like '*#EXT#@*.onmicrosoft.com'} )
+			if ([Helpers]::CheckMember($this.ControlSettings.SubscriptionCore,"NonADIdentitiesPatterns") -and ($this.ControlSettings.SubscriptionCore.NonADIdentitiesPatterns | Measure-Object).Count -ne 0) 
+			{
+				$NonADIdentitiesPattern = (('^' + (($this.ControlSettings.SubscriptionCore.NonADIdentitiesPatterns |foreach {[regex]::escape($_)}) –join '|') + '$')) -replace '[\\]',''
+				$liveAccounts = [array]($this.RoleAssignments | Where-Object {$_.SignInName -and $_.SignInName.ToLower() -imatch $NonADIdentitiesPattern} )
+				#Exclude whitelisted patterns for non-AD identities
+				if( ($liveAccounts | Measure-Object).Count -gt 0 -and  [Helpers]::CheckMember($this.ControlSettings.SubscriptionCore,"WhitelistedNonADIndentitiesPatterns") -and ($this.ControlSettings.SubscriptionCore.WhitelistedNonADIndentitiesPatterns | Measure-Object).Count -ne 0)
+				{
+					$WhiteListedNonADIdentitiesPattern = (('^' + (($this.ControlSettings.SubscriptionCore.WhitelistedNonADIndentitiesPatterns |foreach {[regex]::escape($_)}) –join '|') + '$')) -replace '[\\]',''
+					$liveAccounts = [array]($liveAccounts | Where-Object {$_.SignInName -and $_.SignInName.ToLower() -inotmatch $WhiteListedNonADIdentitiesPattern} )
+				}				
+			}
 
 			if(($liveAccounts | Measure-Object).Count -gt 0)
 			{
@@ -316,7 +353,8 @@ class SubscriptionCore: SVTBase
 			$serviceAccounts = @()
 			if($null -ne $this.CurrentContext)
 			{
-				$GraphAccessToken = [Helpers]::GetAccessToken([WebRequestHelper]::GraphAPIUri)
+				$GraphUri = [WebRequestHelper]::GetGraphUrl()
+				$GraphAccessToken = [ContextHelper]::GetAccessToken($GraphUri)
 			}
 
 			$uniqueUsers = @();
@@ -454,6 +492,9 @@ class SubscriptionCore: SVTBase
 		{
 			#$controlResult.AddMessage([MessageData]::new("Security center policies must be configured with settings mentioned below:", $this.SecurityCenterInstance.Policy.properties));			
 
+			$this.SubscriptionContext.SubscriptionMetadata.Add("MissingOptionalASCPolicies",$this.MisConfiguredOptionalASCPolicies);
+			$this.SubscriptionContext.SubscriptionMetadata.Add("MissingMandatoryASCPolicies",$this.MisConfiguredASCPolicies);
+
 			if(($this.MisConfiguredASCPolicies | Measure-Object).Count -ne 0)
 			{
 				$controlResult.EnableFixControl = $true;
@@ -484,20 +525,38 @@ class SubscriptionCore: SVTBase
 	hidden [ControlResult] CheckAzureSecurityCenterAlerts([ControlResult] $controlResult)
 	{
 		$this.GetASCAlerts()
-
-		$activeAlerts = ($this.ASCSettings.Alerts | Where-Object {$_.State -eq "Active"})
-		if(($activeAlerts | Measure-Object).Count -gt 0)
+		$activeAlerts = ($this.ASCSettings.Alerts | Where-Object {$_.State -eq "Active" })
+		if(($activeAlerts | Measure-Object).Count -gt 0 )
 		{
-			$controlResult.SetStateData("Active alert in Security Center", $activeAlerts);
-			$controlResult.AddMessage([VerificationResult]::Failed,"Azure Security Center have active alerts that need to resolved.")
-		}
-		else {
-			$controlResult.VerificationResult =[VerificationResult]::Passed
-		}
+			  if( [Helpers]::CheckMember($this.ControlSettings, 'ASCAlertsThresholdInDays') -and [Helpers]::CheckMember($this.ControlSettings, 'ASCAlertsSeverityLevels'))
+			  {
+				 $AlertDaysCheck = $this.ControlSettings.ASCAlertsThresholdInDays
+				 $AlertSeverityCheck = $this.ControlSettings.ASCAlertsSeverityLevels				
+				 $activeAlerts = $activeAlerts | Where-Object{ ( [System.DateTime]::Parse($_.ReportedTimeUTC).AddDays($AlertDaysCheck) -ge ([System.DateTime]::UtcNow)) -and $_.ReportedSeverity -in $AlertSeverityCheck}
+				 if(($activeAlerts | Measure-Object).Count -gt 0)
+				 {
+					$controlResult.SetStateData("Active alert in Security Center", ($activeAlerts | Select-Object AlertName, ReportedTimeUTC));
+					$controlResult.AddMessage([VerificationResult]::Failed,"Azure Security Center have active alerts that need to resolved.")
+                    $controlResult.AddMessage(($activeAlerts | Select-Object State, AlertDisplayName, AlertName, Description, ReportedTimeUTC,ReportedSeverity, RemediationSteps))
+					return $controlResult;
+				 }
+				 else
+				 {
+					$controlResult.VerificationResult =[VerificationResult]::Passed
+					return $controlResult;
+				 }
+			  }
+			 $controlResult.SetStateData("Active alert in Security Center", ($activeAlerts | Select-Object AlertName, ReportedTimeUTC));
+			 $controlResult.AddMessage([VerificationResult]::Failed,"Azure Security Center have active alerts that need to resolved.")
+             $controlResult.AddMessage(($activeAlerts | Select-Object State, AlertDisplayName, AlertName, Description, ReportedTimeUTC,ReportedSeverity, RemediationSteps))
 
-		$controlResult.AddMessage(($activeAlerts | Select-Object State, AlertDisplayName, AlertName, Description, ReportedTimeUTC, RemediationSteps))
-
-		return $controlResult
+				
+		}
+		else 
+		{
+			 $controlResult.VerificationResult =[VerificationResult]::Passed
+		}
+		 return $controlResult
 	}	
 
 	hidden [ControlResult] CheckSPNsRBAC([ControlResult] $controlResult)
@@ -538,7 +597,7 @@ class SubscriptionCore: SVTBase
 		$lockDtls = $null
         #Command will throw exception if no locks found
         try {
-                $lockDtls = Get-AzureRmResourceLock -ErrorAction Stop # -Scope "/subscriptions/$SubscriptionId"
+                $lockDtls = Get-AzResourceLock -ErrorAction Stop # -Scope "/subscriptions/$SubscriptionId"
         }
         catch
         {
@@ -565,7 +624,7 @@ class SubscriptionCore: SVTBase
 	hidden [ControlResult] CheckARMPoliciesCompliance([ControlResult] $controlResult)
 	{
 
-		$subARMPol = [ARMPolicy]::new($this.SubscriptionContext.SubscriptionId, $this.InvocationContext, "", $false);
+		$subARMPol = [ARMPolicy]::new($this.SubscriptionContext.SubscriptionId, $this.InvocationContext, "Mandatory", $false);
         $output = @()
         $foundMandatoryPolicies = $true
 
@@ -574,34 +633,15 @@ class SubscriptionCore: SVTBase
 		[string] $CurrentVersion = "0.0.0";
 		[string] $LatestVersion = "0.0.0";
 		$AzSKRG = [ConfigurationManager]::GetAzSKConfigData().AzSKRGName
-		# $CurrentVersion = [Helpers]::GetResourceGroupTag($AzSKRG, [Constants]::ARMPolicyConfigVersionTagName)
-		# if([string]::IsNullOrWhiteSpace($CurrentVersion))
-		# {
-		# 	$CurrentVersion = "0.0.0"
-		# }
-		# $minSupportedVersion = [ConfigurationManager]::GetAzSKConfigData().AzSKARMPolMinReqdVersion 
-		# $IsLatestVersion = $this.IsLatestVersionConfiguredOnSub($subARMPolConfig.Version,[Constants]::ARMPolicyConfigVersionTagName);
-		# $IsValidVersion = $this.IsLatestVersionConfiguredOnSub($subARMPolConfig.Version,[Constants]::ARMPolicyConfigVersionTagName) -or [System.Version]$minSupportedVersion -le [System.Version]$CurrentVersion ;
-		# $LatestVersion = $subARMPolConfig.Version;
-
         $nonCompliantPolicies = $subARMPol.ValidatePolicyConfiguration();
 
         if(($nonCompliantPolicies | Measure-Object).Count -le 0)
         {
             $controlResult.AddMessage([VerificationResult]::Passed, "Found all the mandatory policies on the Subscription.");
         }
-		# elseif(-not $IsLatestVersion -and $IsValidVersion)
-		# {
-		# 	$this.PublishCustomMessage("WARNING: The Azure Resource Manager policies in your subscription are out of date.`nPlease update to the latest version by running command Update-AzSKSubscriptionSecurity.", [MessageType]::Warning);			
-		# 	$controlResult.AddMessage([VerificationResult]::Passed, "ARM policies has been configured with older policy on the subscription. To update as per latest configuration, run command Update-AzSKSubscriptionSecurity.");
-		# }
         else
         {
-			# $controlResult.EnableFixControl = $true;
-			# if($controlResult.FixControlParameters)
-			# {
-			# 	$controlResult.FixControlParameters.Tags = $this.SubscriptionMandatoryTags;
-			# }
+			$controlResult.EnableFixControl = $true;
 			$controlResult.SetStateData("Missing ARM policies", $nonCompliantPolicies);
 			$controlResult.AddMessage([VerificationResult]::Failed, "Some of the mandatory policies are missing]", $nonCompliantPolicies);
         }
@@ -611,69 +651,86 @@ class SubscriptionCore: SVTBase
 	hidden [ControlResult] CheckCriticalAlertsPresence([ControlResult] $controlResult)
 	{
         $alertDiffList = @()
-		$operationDiffList = @()
+		$operationsDiffList = @()
+        $foundRequiredAlerts = $false
+		$isValidVersion = $false;
+		$isLatestVersion = $false;
+		$currentVersion = "0.0.0";
+		$latestVersion = "0.0.0";
+		$configuredAlerts = $null
+    
+        # Get list of alerts from Json file
 		$alertConfig =  $this.LoadServerConfigFile("Subscription.InsARMAlerts.json");
-		$subInsightsAlertsConfig = $alertConfig.AlertList | Where-Object {$_.tags -contains "Mandatory"}
-        $foundRequiredAlerts = $true
-		[bool] $IsValidVersion = $false;
-		[bool] $IsLatestVersion = $false;
-		[string] $CurrentVersion = "0.0.0";
-		[string] $LatestVersion = "0.0.0";
-		$AlertsPkgRG = [ConfigurationManager]::GetAzSKConfigData().AzSKRGName
-		$CurrentVersion = [Helpers]::GetResourceGroupTag($AlertsPkgRG, [Constants]::AzSKAlertsVersionTagName)
-		if([string]::IsNullOrWhiteSpace($CurrentVersion))
+		$subInsightsAlertsConfig = $alertConfig.AlertList | Where-Object { ($_.tags -contains "Mandatory") -or ($_.tags -contains "Optional")}
+        
+        # Get currently set alert's version
+		$alertsPkgRG = [ConfigurationManager]::GetAzSKConfigData().AzSKRGName
+		$currentVersion = [ResourceGroupHelper]::GetResourceGroupTag($alertsPkgRG, [Constants]::AzSKAlertsVersionTagName)
+		if([string]::IsNullOrWhiteSpace($currentVersion))
 		{
-			$CurrentVersion = "0.0.0"
+			$currentVersion = "0.0.0"
 		}
 		$minSupportedVersion = [ConfigurationManager]::GetAzSKConfigData().AzSKAlertsMinReqdVersion 
-		$IsLatestVersion = $this.IsLatestVersionConfiguredOnSub($alertConfig.Version,[Constants]::AzSKAlertsVersionTagName);
-		$IsValidVersion = $this.IsLatestVersionConfiguredOnSub($alertConfig.Version,[Constants]::AzSKAlertsVersionTagName) -or [System.Version]$minSupportedVersion -le [System.Version]$CurrentVersion ;
+		$IsLatestVersion = [ResourceGroupHelper]::IsLatestVersionConfiguredOnSub($alertConfig.Version,[Constants]::AzSKAlertsVersionTagName);
+		$IsValidVersion = ($IsLatestVersion) -or ([System.Version]$minSupportedVersion -le [System.Version]$currentVersion) ;
 		$LatestVersion = $alertConfig.Version;
 
-        if($null -ne $subInsightsAlertsConfig)
-        {
-            $subInsightsAlertsConfig =[array]($subInsightsAlertsConfig)
-
-			
-            $alertsRG = [array] (Get-AzureRmResourceGroup | Where-Object {$_.ResourceGroupName -eq "$AlertsPkgRG"})
-            $configuredAlerts = $null
+        # Get currently configured alerts from azure portal
+        if(($subInsightsAlertsConfig | Measure-Object).Count -gt 0)
+		{		
+            $alertsRG = Get-AzResourceGroup | Where-Object {$_.ResourceGroupName -eq "$alertsPkgRG"}
             if (($alertsRG | Measure-Object).Count -eq 1)
             {
-                $configuredAlerts = Get-AzureRmResource -ResourceType "Microsoft.Insights/activityLogAlerts" -ResourceGroupName  $AlertsPkgRG -ExpandProperties -ErrorAction SilentlyContinue
-            }
-
-            if((($alertsRG | Measure-Object).Count -eq 1) -and ($null -ne $configuredAlerts)){
-                $subInsightsAlertsConfig | ForEach-Object{                    
-					Set-Variable -Name alert -Scope Local -Value $_
-                    Set-Variable -Name alertEnabled -Scope Local -Value $_.Enabled
-                    Set-Variable -Name alertName -Scope Local -Value $_.Name
-                    Set-Variable -Name tags -Scope Local -Value $_.Tags
-                    $haveMatchedTags = ((($tags | Where-Object { $this.SubscriptionMandatoryTags -contains $_ }) | Measure-Object).Count -gt 0)
-                    
-					if($alertEnabled -and $haveMatchedTags)
-                    {
-                        $foundAlert = [array]($configuredAlerts | Where-Object  {$_.Name -eq $alertName})
-						#Verify if alert present
-                        if($null -eq $foundAlert -or ($foundAlert | Measure-Object).Count -le 0)
-                        {
-                            $foundRequiredAlerts = $false
-                            $alertDiffList += $alert
-                        }
-						#if alert exists then verify operation list 
+                $configuredAlerts = Get-AzResource -ResourceType "Microsoft.Insights/activityLogAlerts" -ResourceGroupName  $alertsPkgRG -ExpandProperties -ErrorAction SilentlyContinue
+			}			
+			if(($configuredAlerts | Measure-Object).Count -gt 0)
+			{
+				$matchingAlertRulesNames = Compare-Object -ReferenceObject $configuredAlerts.Name -DifferenceObject $subInsightsAlertsConfig.Name -IncludeEqual -ExcludeDifferent
+				if(($matchingAlertRulesNames| Measure-Object).count -gt 0)
+				{
+					$configuredAlerts = $configuredAlerts | Where-Object { $matchingAlertRulesNames.InputObject -contains $_.Name }
+					if(($configuredAlerts | Measure-Object).Count -gt 0)
+					{
+						$currentAlertsOperationsList = $configuredAlerts | ForEach-Object { 
+							if([Helpers]::CheckMember($_,"Properties.condition") -and (($_.Properties.condition.allOf | Measure-Object).Count -eq 3) -and [Helpers]::CheckMember($_.Properties.condition.allOf[2],"anyOf"))
+							{
+								$_.Properties.condition.allOf[2].anyOf
+							}
+						} | Select-Object -property @{N='OperationName';E={$_.equals}} -Unique	
+					}
+					else
+					{
+						$currentAlertsOperationsList = $null
+					}
+                    $requiredAlertsOperations = ($subInsightsAlertsConfig | Where{ $_.Tags -contains $this.SubscriptionMandatoryTags}).AlertOperationList 
+                    $requiredAlertsOperationsList = ($requiredAlertsOperations | Where-Object { $_.Tags -contains $this.SubscriptionMandatoryTags }).OperationName
+					if((($currentAlertsOperationsList| Measure-Object).Count -gt 0) -and (($requiredAlertsOperationsList | Measure-Object).Count -gt 0))
+					{
+						$operationsDiffList = Compare-Object -ReferenceObject $requiredAlertsOperationsList -DifferenceObject $currentAlertsOperationsList.OperationName | Where-Object { $_.SideIndicator -eq "<=" }
+						if(($operationsDiffList| Measure-Object).Count -eq 0)
+						{
+							$foundRequiredAlerts = $true
+						}
 						else
 						{
-							$diffObj= $foundAlert.Properties.condition.allOf[2].anyOf | Select-Object equals
-							$refObj= $alert.AlertOperationList | Where-Object {$_.Enabled -eq $true} | Select-Object OperationName
-							$opDiffList= Compare-Object -ReferenceObject $refObj -DifferenceObject $diffObj | Select-Object -property @{N='OperationList';E={$_.InputObject.equals}}  
-							if($null -ne $opDiffList)
-							{
-								$opList=  $opDiffList.OperationList
-								$foundRequiredAlerts = $false
-								$operationDiffList += @{Name=$alertName; Description=$alert.Description; OperationNameList = $opList }
-							}
+							$operationsDiffList = $operationsDiffList.InputObject
+							$foundRequiredAlerts = $false
 						}
-                    }
-                }
+					}
+					elseif(($requiredAlertsOperationsList| Measure-Object).Count -eq 0)
+					{
+						$foundRequiredAlerts = $true
+					}
+					elseif(($currentAlertsOperationsList | Measure-Object).Count -eq 0)
+					{
+						$foundRequiredAlerts = $false
+					}
+				}
+				else
+				{
+					# Alert(s) not found in specified RG
+					$foundRequiredAlerts = $false
+				}
             }
             else {
 				#If new alerts are not found and server flag EnableV1AlertFailure is false, 
@@ -688,7 +745,11 @@ class SubscriptionCore: SVTBase
 				}
             }
         }
-
+		else
+		{
+			# No alert(s) defined in JSON file
+			$foundRequiredAlerts = $true	
+		}
         if($foundRequiredAlerts)
         {
             $controlResult.AddMessage([VerificationResult]::Passed, "Insights alerts has been configured on the subscription.");
@@ -712,14 +773,11 @@ class SubscriptionCore: SVTBase
 					$controlResult.AddMessage([VerificationResult]::Failed, "Missing mandatory critical alerts list on the subscription.", $alertDiffList);	
 					$controlResult.SetStateData("Missing mandatory critical alerts", $alertDiffList);
 				}
-				if(($operationDiffList | Measure-Object).Count -ne 0)
+				if(($operationsDiffList | Measure-Object).Count -ne 0)
 				{
-					$controlResult.AddMessage([VerificationResult]::Failed, "Operation mismatch in critical alerts on the subscription.", $operationDiffList);	
-					$controlResult.SetStateData("Missing mandatory critical alerts", $operationDiffList);
-				}
-				
-
-									
+					$controlResult.AddMessage([VerificationResult]::Failed, "Operation mismatch in critical alerts on the subscription.", $operationsDiffList);	
+					$controlResult.SetStateData("Missing mandatory critical alerts", $operationsDiffList);
+				}								
         }
 		return $controlResult
 	}
@@ -734,12 +792,12 @@ class SubscriptionCore: SVTBase
         {
             $subInsightsAlertsConfig =[array]($subInsightsAlertsConfig)
 
-			$AlertsPkgRG = "AzSKAlertsRG"
-            $alertsRG = [array] (Get-AzureRmResourceGroup | Where-Object {$_.ResourceGroupName -match "^$AlertsPkgRG"})
+			$alertsPkgRG = "AzSKAlertsRG"
+            $alertsRG = [array] (Get-AzResourceGroup | Where-Object {$_.ResourceGroupName -match "^$alertsPkgRG"})
             $configuredAlerts = $null
             if (($alertsRG | Measure-Object).Count -eq 1)
             {
-                $configuredAlerts = Get-AzureRmAlertRule -ResourceGroup $AlertsPkgRG -WarningAction SilentlyContinue
+                $configuredAlerts = Get-AzAlertRule -ResourceGroup $alertsPkgRG -WarningAction SilentlyContinue
             }
 
             if((($alertsRG | Measure-Object).Count -eq 1) -and ($null -ne $configuredAlerts)){
@@ -786,7 +844,7 @@ class SubscriptionCore: SVTBase
 		$whitelistedCustomRoleIds = @();
 		$whitelistedCustomRoleIds += $this.ControlSettings.WhitelistedCustomRBACRoles | Select-Object -Property Id | Select-Object -ExpandProperty Id
 		$CustomRBACAssignedRolesCount=0;
-		$customRoles += Get-AzureRmRoleDefinition -Custom | Where-Object { $whitelistedCustomRoleIds -notcontains $_.Id };
+		$customRoles += Get-AzRoleDefinition -Custom | Where-Object { $whitelistedCustomRoleIds -notcontains $_.Id };
 		$customRoles | ForEach-Object {
 			$role = $_;
 			$roleWithAssignment = $role | Select-Object *, RoleAssignmentCount;
@@ -817,7 +875,7 @@ class SubscriptionCore: SVTBase
 
 	hidden [ControlResult] CheckPresenceOfClassicResources([ControlResult] $controlResult)
 	{
-       $classicResources = [array] (Get-AzureRMResource | Where-Object {$_.ResourceType -like "*classic*"} )
+       $classicResources = [array] (Get-AzResource | Where-Object {$_.ResourceType -like "*classic*"} )
         if(($classicResources | Measure-Object).Count -gt 0)
         {
 			#$controlResult.SetStateData("Classic resources on subscription", $classicResources);
@@ -827,10 +885,10 @@ class SubscriptionCore: SVTBase
 			$ClassicVMCount = 0;
 			$ClassicVNetCount = 0;
 
-			$ClassicVMCount = (Get-AzureRmResource -ResourceType Microsoft.ClassicCompute/virtualMachines | Measure-Object).Count;
-			$ClassicStorageCount = (Get-AzureRmResource -ResourceType Microsoft.ClassicStorage/storageAccounts | Measure-Object).Count;
-			$CloudServiceCount = (Get-AzureRmResource -ResourceType Microsoft.ClassicCompute/domainNames | Measure-Object).Count;
-			$ClassicVNetCount = (Get-AzureRmResource -ResourceType Microsoft.ClassicNetwork/virtualNetworks | Measure-Object).Count;
+			$ClassicVMCount = (Get-AzResource -ResourceType Microsoft.ClassicCompute/virtualMachines | Measure-Object).Count;
+			$ClassicStorageCount = (Get-AzResource -ResourceType Microsoft.ClassicStorage/storageAccounts | Measure-Object).Count;
+			$CloudServiceCount = (Get-AzResource -ResourceType Microsoft.ClassicCompute/domainNames | Measure-Object).Count;
+			$ClassicVNetCount = (Get-AzResource -ResourceType Microsoft.ClassicNetwork/virtualNetworks | Measure-Object).Count;
 
             #$controlResult.AddMessage([VerificationResult]::Failed, "Found classic resources on the subscription.", $classicResources, $true, "ClassicResources")
 
@@ -856,7 +914,7 @@ class SubscriptionCore: SVTBase
 
 	hidden [ControlResult] CheckPresenceOfClassicVMs([ControlResult] $controlResult)
 	{
-        $classicVMResources = [array] (Get-AzureRmResource -ResourceType Microsoft.ClassicCompute/virtualMachines)
+        $classicVMResources = [array] (Get-AzResource -ResourceType Microsoft.ClassicCompute/virtualMachines)
         if(($classicVMResources | Measure-Object).Count -gt 0)
         {
 			$controlResult.SetStateData("Classic virtual machines on subscription", $classicVMResources);
@@ -873,7 +931,7 @@ class SubscriptionCore: SVTBase
 
 	hidden [ControlResult] CheckPublicIpUsage([ControlResult] $controlResult)
 	{
-		$publicIps = Get-AzureRmPublicIpAddress
+		$publicIps = Get-AzPublicIpAddress
 		$ipFlatList = [System.Collections.ArrayList]::new()
 		foreach($publicIp in $publicIps){
 			$ip = $publicIp | Select-Object ResourceGroupName, Name, Location, PublicIpAllocationMethod, IpAddress, PublicIpAddressVersion, AssociatedResourceType, AssociatedResourceId, AssociatedResourceName, Fqdn
@@ -914,39 +972,290 @@ class SubscriptionCore: SVTBase
 
 	hidden [ControlResult] CheckPermanentRoleAssignments([ControlResult] $controlResult)
 	{
-		$message='';
+		$message = '';
+		$whitelistedPermanentRoles = $null
 		if($null -eq $this.PIMAssignments -and $null -eq $this.permanentAssignments)
 		{
 			$message=$this.GetPIMRoles();
 		}
-		
-		$criticalRoles=$this.ControlSettings.CriticalPIMRoles;
-		$permanentRoles=$this.permanentAssignments;
-		if(($permanentRoles| measure-object).Count -gt 0 )
+		if($message -ne 'OK') # if there is some while making request message will contain exception
 		{
-			$criticalPermanentRoles=$permanentRoles|Where-Object{$_.RoleDefinitionName -in $criticalRoles}
-			if(($criticalPermanentRoles| measure-object).Count -gt 0)
-			{
-				$controlResult.SetStateData("Permanent role assignments present on subscription",$criticalPermanentRoles)
-				$controlResult.AddMessage([VerificationResult]::Failed, "Subscription contains permanent role assignment for critical roles : $criticalRoles")
-				$permanentRolesbyRoleDefinition=$criticalPermanentRoles|Sort-Object -Property RoleDefinitionName
-				$controlResult.AddMessage($permanentRolesbyRoleDefinition);
-				
-			}
-			else 
-			{
-				$controlResult.AddMessage([VerificationResult]::Passed)
-			}
+
+				$controlResult.AddMessage("Unable to fetch PIM data, please verify manually.")
+				$controlResult.AddMessage($message);
 		}
-		else
+		else 
 		{
-			$controlResult.AddMessage("Unable to fetch PIM data, please verify manually.")
-			$controlResult.AddMessage($message);
+			$criticalRoles = $this.ControlSettings.CriticalPIMRoles.Subscription;
+			$permanentRoles = $this.permanentAssignments;
+			if([Helpers]::CheckMember($this.ControlSettings,"WhitelistedPermanentRoles"))
+			{
+				$whitelistedPermanentRoles = $this.ControlSettings.whitelistedPermanentRoles
+			}
+			if(($permanentRoles | measure-object).Count -gt 0 )
+			{
+				
+				$criticalPermanentRoles = $permanentRoles | Where-Object{$_.RoleDefinitionName -in $criticalRoles -and ($_.ObjectType -eq 'User' -or $_.ObjectType -eq 'Group')}
+				if($null -ne $whitelistedPermanentRoles)
+				{
+					$criticalPermanentRoles = $criticalPermanentRoles | Where-Object{ $_.DisplayName -notin $whitelistedPermanentRoles.DisplayName}
+				}
+				if(($criticalPermanentRoles| measure-object).Count -gt 0)
+				{
+					$controlResult.SetStateData("Permanent role assignments present on subscription",$criticalPermanentRoles)
+					$controlResult.AddMessage([VerificationResult]::Failed, "Subscription contains permanent role assignment for critical roles : $criticalRoles")
+					$permanentRolesbyRoleDefinition=$criticalPermanentRoles|Sort-Object -Property RoleDefinitionName
+					$controlResult.AddMessage($permanentRolesbyRoleDefinition);
+					
+				}
+				else 
+				{
+					$controlResult.AddMessage([VerificationResult]::Passed, "No permanent assignments found for the following roles at subscription scope: $($criticalRoles -join ', ')")
+				}
+			}
+			else
+			{	
+				$controlResult.AddMessage([VerificationResult]::Passed, "No permanent assignments found for the following roles at subscription scope: $($criticalRoles -join ', ')")
+			}
+	
 		}
 
 		return $controlResult
 
-	}	   
+	}
+
+	# This function evaluates permanent role assignments at resource group level.
+	hidden [ControlResult] CheckRGLevelPermanentRoleAssignments([ControlResult] $controlResult)
+	{
+		
+		$whitelistedPermanentRoles = $null
+		$message=$this.GetRGLevelPIMRoles();
+		if($message -ne 'OK') # if there is some while making request message will contain exception
+		{
+
+			$controlResult.AddMessage("Unable to fetch PIM data, please verify manually.")
+			$controlResult.AddMessage($message);
+			return $controlResult;
+		}
+		else
+		{
+		# 'Owner' and 'User Access Administrator' are high privileged roles. These roles should not be give permanent access at resource group level.
+			$criticalRoles = $this.ControlSettings.CriticalPIMRoles.ResourceGroup;
+			$permanentRoles = $this.RGLevelPermanentAssignments;
+			if([Helpers]::CheckMember($this.ControlSettings,"WhitelistedPermanentRoles"))
+			{
+				$whitelistedPermanentRoles = $this.ControlSettings.whitelistedPermanentRoles
+			}
+			
+			if(($permanentRoles | measure-object).Count -gt 0 )
+			{
+				$criticalPermanentRoles = $permanentRoles | Where-Object{$_.RoleDefinitionName -in $criticalRoles -and ($_.ObjectType -eq 'User' -or $_.ObjectType -eq 'Group')}
+				if($null -ne $whitelistedPermanentRoles)
+				{
+					$criticalPermanentRoles = $criticalPermanentRoles | Where-Object{ $_.DisplayName -notin $whitelistedPermanentRoles.DisplayName}
+				}
+				if(($criticalPermanentRoles| measure-object).Count -gt 0)
+				{
+					$controlResult.SetStateData("Permanent role assignments present on resource groups",$criticalPermanentRoles)
+					$controlResult.AddMessage([VerificationResult]::Failed, "Resource groups contains permanent role assignment for critical roles : $($criticalRoles -join ',')")
+					$permanentRolesbyRoleDefinition=$criticalPermanentRoles|Sort-Object -Property RoleDefinitionName | Select-Object SubscriptionId, @{Name="ResourceGroupName"; Expression={$_.Scope.Split("/")[-1]}}, DisplayName, ObjectType, RoleDefinitionName | Format-List | Out-String
+					$controlResult.AddMessage($permanentRolesbyRoleDefinition);
+					
+				}
+				else 
+				{
+					$controlResult.AddMessage([VerificationResult]::Passed, "No permanent assignments found for the following roles at resource group scope: $($criticalRoles -join ', ')")
+				}
+			}
+			else
+			{
+				$controlResult.AddMessage([VerificationResult]::Passed, "No permanent assignments found for the following roles at resource group scope: $($criticalRoles -join ', ')")
+				
+			}		
+		
+		}
+
+		return $controlResult
+
+	}
+	
+	hidden [ControlResult] CheckMandatoryTags([ControlResult] $controlResult)
+	{
+					#Check if mandatory tags list present
+			if([Helpers]::CheckMember($this.ControlSettings,"MandatoryTags") -and ($this.ControlSettings.MandatoryTags | Measure-Object).Count -ne 0)
+			{
+				$whitelistedResourceGroupsRegex = [System.Collections.ArrayList]::new()
+				if ([Helpers]::CheckMember($this.ControlSettings,"WhitelistedResourceGroups") -and ($this.ControlSettings.WhitelistedResourceGroups | Measure-Object).Count -ne 0) 
+				{
+					$whitelistedResourceGroupsRegex = $this.ControlSettings.WhitelistedResourceGroups						
+				}
+				$whitelistedResourceGroupsRegex = (('^' + (($whitelistedResourceGroupsRegex |foreach {[regex]::escape($_)}) –join '|') + '$')) -replace '[\\]',''
+				$resourceGroups = Get-AzResourceGroup | Where-Object {$_.ResourceGroupName -inotmatch $whitelistedResourceGroupsRegex}
+
+					if(($resourceGroups | Measure-Object).Count -gt 0)
+					{
+									$rgTagStatus = $true
+									$controlResult.AddMessage("`nTotal number of RGs:" + ($resourceGroups | Measure-Object).Count)
+									$this.ControlSettings.MandatoryTags | ForEach-Object {
+													$tagObject = $_
+													
+													$controlResult.AddMessage("`nPolicy Requirement: `n`tTag: '$($tagObject.Name)' `n`tScope: '$($tagObject.Scope)' `n`tExpected Values: '$($tagObject.Values)' `n`tExpected Type: '$($tagObject.Type)'")
+
+													#Step1 Validate if tag present on RG                                        
+													$rgListwithoutTags = $resourceGroups | Where-Object { [string]::IsNullOrWhiteSpace($_.Tags) -or (-not ($_.Tags.Keys -icontains $tagObject.Name))}
+													
+													if(($rgListwithoutTags | Measure-Object).Count -gt 0)
+													{
+																	$rgTagStatus = $false
+																	$controlResult.AddMessage("`nTotal number of RGs without Tag: " + ($rgListwithoutTags | Measure-Object).Count, ($rgListwithoutTags | Select-Object ResourceGroupName | ForEach-Object {$_.ResourceGroupName}))
+													}
+													
+													$rgListwithDuplicateTags = $resourceGroups | Where-Object { (-not [string]::IsNullOrWhiteSpace($_.Tags)) -and (($_.Tags.Keys -match "\b$($tagObject.Name)\b") | Measure-Object).Count -gt 1 }
+													
+													if(($rgListwithDuplicateTags | Measure-Object).Count -gt 0)
+													{
+																	$rgTagStatus = $false
+																	$controlResult.AddMessage("`nTotal number of RGs with duplicate Tag(multiple Tags with same name): " + ($rgListwithDuplicateTags | Measure-Object).Count, ($rgListwithDuplicateTags | Select-Object ResourceGroupName | ForEach-Object {$_.ResourceGroupName}))
+													}
+
+													$rgListwithTags = $resourceGroups | Where-Object { (-not [string]::IsNullOrWhiteSpace($_.Tags)) -and (($_.Tags.Keys -match "\b$($tagObject.Name)\b") | Measure-Object).Count -eq 1 }
+													
+													if(($rgListwithTags| Measure-Object).Count -gt 0)
+													{
+																	if($tagObject.Values -notcontains "*")
+																	{
+																					#Validate if expected tag value is present 
+																					$rgListwithoutTagValue = $rgListwithTags | Where-Object { $_.Tags[$_.Tags.Keys -match "\b$($tagObject.Name)\b"] -inotin $tagObject.Values} #$rgListwithTags | Where-Object { $_.Tags | Where-Object { $_.GetEnumerator() | Where-Object { $_.Key -eq $tagObject.Name -and $_.Value -notin $tagObject.Values}}}
+																					if(($rgListwithoutTagValue | Measure-Object).Count -gt 0)
+																					{
+																									$rgTagStatus = $false
+																									$controlResult.AddMessage("`nTotal number of RGs without expected value : " + ($rgListwithoutTagValue | Measure-Object).Count, ($rgListwithoutTagValue | Select-Object ResourceGroupName | ForEach-Object {$_.ResourceGroupName}))
+																					}
+																	}
+
+																	#Validate tag value type
+																	if($tagObject.ValidateTagValueType -and ($rgListwithTags| Measure-Object).Count -gt 0)
+																	{     
+																					switch($tagObject.Type)
+																					{
+																									("Guid") {  
+																													$emptyGuid = [Guid]::Empty 
+																													$RGListWithoutExpectedTypeValue = $rgListwithTags | Where-Object { (-not [Guid]::TryParse($_.Tags[$_.Tags.Keys -match "\b$($tagObject.Name)\b"], [ref] $emptyGuid))} #$rgListwithTags | Where-Object { $_.Tags | Where-Object { $_.GetEnumerator() | Where-Object {$_.Key -eq $tagObject.Name -and (-not [Guid]::TryParse($_.Value, [ref] $emptyGuid))}}}
+																													if(($RGListWithoutExpectedTypeValue | Measure-Object).Count -gt 0)
+																													{
+																																	$rgTagStatus = $false
+																																	$controlResult.AddMessage("`nTotal number of RGs without expected value type: " + ($RGListWithoutExpectedTypeValue | Measure-Object).Count,($RGListWithoutExpectedTypeValue | Select-Object ResourceGroupName | foreach {$_.ResourceGroupName}))
+																													}
+																									}
+																					}
+																	}
+													}
+													$controlResult.AddMessage([Constants]::UnderScoreLineLine)
+									}
+									
+									if(-not $rgTagStatus)
+									{
+													$controlResult.AddMessage([VerificationResult]::Failed, "Resource group(s) failed to comply with mandatory tags." )
+									}
+									else
+									{
+													$controlResult.AddMessage([VerificationResult]::Passed, "Resource group(s) comply with mandatory tags." )
+									}                                                              
+					}
+					else
+					{
+									$controlResult.AddMessage([VerificationResult]::Passed,"No resource group(s) found" )
+					}
+			}
+			else
+			{
+							$controlResult.AddMessage([VerificationResult]::Passed,"No mandatory tags required" )
+			}
+
+			return $controlResult
+	}
+
+
+	hidden [ControlResult] CheckASCTier ([ControlResult] $controlResult)
+	{
+		$ascTierContentDetails = $this.SecurityCenterInstance.ASCTier;
+		
+		$VMASCTier = $this.SecurityCenterInstance.VMASCTier;
+		$SQLASCTier = $this.SecurityCenterInstance.SQLASCTier;
+		$AppSvcASCTier = $this.SecurityCenterInstance.AppSvcASCTier;
+		$StorageASCTier = $this.SecurityCenterInstance.StorageASCTier;
+
+		if(-not [string]::IsNullOrWhiteSpace($ascTierContentDetails))		
+		{
+			[bool] $bool = $true;
+			
+			$ascTier = "Standard"
+
+			if([Helpers]::CheckMember($this.ControlSettings,"SubscriptionCore.ASCTier"))
+			{
+				$bool = $bool -and ($this.ControlSettings.SubscriptionCore.ASCTier -contains $ascTierContentDetails)
+			}
+			else
+			{
+				$bool = $bool -and ($ascTier -eq $ascTierContentDetails)
+			}
+
+			if([Helpers]::CheckMember($this.ControlSettings,"SubscriptionCore.ResourceTypeASCTier.VirtualMachines"))
+			{
+				$VM = ($this.ControlSettings.SubscriptionCore.ResourceTypeASCTier.VirtualMachines -contains $VMASCTier)
+				if(-not $VM)
+				{
+					$controlResult.AddMessage("$($this.ControlSettings.SubscriptionCore.ResourceTypeASCTier.VirtualMachines) pricing tier is not configured for virtual machines.")
+				}
+				
+				$bool = $bool -and $VM
+			}
+
+			if([Helpers]::CheckMember($this.ControlSettings,"SubscriptionCore.ResourceTypeASCTier.SqlServers"))
+			{
+				$SQL = ($this.ControlSettings.SubscriptionCore.ResourceTypeASCTier.SqlServers -contains $SQLASCTier)
+				if(-not $SQL)
+				{
+					$controlResult.AddMessage("$($this.ControlSettings.SubscriptionCore.ResourceTypeASCTier.SqlServers) pricing tier is not configured for SQL servers.")
+				}
+				
+				$bool = $bool -and $SQL
+			}
+
+			if([Helpers]::CheckMember($this.ControlSettings,"SubscriptionCore.ResourceTypeASCTier.AppServices"))
+			{
+				$AppSvc = ($this.ControlSettings.SubscriptionCore.ResourceTypeASCTier.AppServices -contains $AppSvcASCTier)
+				if(-not $AppSvc)
+				{
+					$controlResult.AddMessage("$($this.ControlSettings.SubscriptionCore.ResourceTypeASCTier.AppServices) pricing tier is not configured for app services.")
+				}
+
+				$bool = $bool -and $AppSvc
+			}
+
+			if([Helpers]::CheckMember($this.ControlSettings,"SubscriptionCore.ResourceTypeASCTier.StorageAccounts"))
+			{
+				$Storage = ($this.ControlSettings.SubscriptionCore.ResourceTypeASCTier.StorageAccounts -contains $StorageASCTier)
+				if(-not $Storage)
+				{
+					$controlResult.AddMessage("$($this.ControlSettings.SubscriptionCore.ResourceTypeASCTier.StorageAccounts) pricing tier is not configured for storage accounts.")
+				}
+				
+				$bool = $bool -and $Storage
+			}
+
+			if($bool)			
+			{
+				$controlResult.AddMessage([VerificationResult]::Passed, "Expected pricing tier is configured for ASC." )
+			}
+			else
+			{
+				$controlResult.AddMessage([VerificationResult]::Failed, "`nExpected pricing tier is not configured for ASC. `n" )
+			}
+		}
+		return $controlResult
+	}
+
 	hidden [void] LoadRBACConfig()
 	{
 		if(($this.MandatoryAccounts | Measure-Object).Count -eq 0 `
@@ -996,7 +1305,7 @@ class SubscriptionCore: SVTBase
 	hidden [void] GetManagementCertificates()
 	{
 		$ResourceAppIdURI = [WebRequestHelper]::GetServiceManagementUrl()
-		$ClassicAccessToken = [Helpers]::GetAccessToken($ResourceAppIdURI)
+		$ClassicAccessToken = [ContextHelper]::GetAccessToken($ResourceAppIdURI)
 		if($null -ne $ClassicAccessToken)
 		{
 			$header = "Bearer " + $ClassicAccessToken
@@ -1021,7 +1330,7 @@ class SubscriptionCore: SVTBase
 	hidden [void] GetASCAlerts()
 	{
 		$ResourceAppIdURI = [WebRequestHelper]::GetResourceManagerUrl()
-		$AccessToken = [Helpers]::GetAccessToken($ResourceAppIdURI)
+		$AccessToken = [ContextHelper]::GetAccessToken($ResourceAppIdURI)
 		if($null -ne $AccessToken)
 		{
 			$header = "Bearer " + $AccessToken
@@ -1071,14 +1380,14 @@ class SubscriptionCore: SVTBase
 			$this.ASCSettings.Alerts = [AzureSecurityCenter]::GetASCAlerts($output)
 		}
 	}	
-   
+
 	hidden [string] GetPIMRoles()
 	{
 		$message='';
 		if($null -eq $this.PIMAssignments)
 		{
 			$ResourceAppIdURI = [WebRequestHelper]::GetServiceManagementUrl()
-			$accessToken = [Helpers]::GetAccessToken($ResourceAppIdURI)
+			$accessToken = [ContextHelper]::GetAccessToken($ResourceAppIdURI)
 			if($null -ne $AccessToken)
 			{
 				$authorisationToken = "Bearer " + $accessToken
@@ -1108,25 +1417,111 @@ class SubscriptionCore: SVTBase
 							$item.RoleDefinitionName = $roleAssignment.roleDefinition.displayName
 							$item.ObjectId = $roleAssignment.subject.id
 							$item.DisplayName = $roleAssignment.subject.displayName
-							$item.ObjectType=$roleAssignment.subject.type;	
-							if($roleAssignment.IsPermanent -eq $false)
-							{
-								#If roleAssignment is non permanent and not active
-								$item.IsPIMEnabled=$true;
-								if($roleAssignment.assignmentState -eq "Eligible")
+							$item.ObjectType=$roleAssignment.subject.type;
+							$item.MemberType = $roleAssignment.memberType;
+							if($roleAssignment.memberType -ne 'Inherited')
 								{
-									$this.PIMAssignments.Add($item);
+									if($roleAssignment.IsPermanent -eq $false)
+									{
+										#If roleAssignment is non permanent and not active
+										$item.IsPIMEnabled=$true;
+										if($roleAssignment.assignmentState -eq "Eligible")
+										{
+											$this.PIMAssignments.Add($item);
+										}
+									}
+									else
+									{
+										#If roleAssignment is permanent
+										$item.IsPIMEnabled=$false;
+										$this.permanentAssignments.Add($item);
+
+									}
+								}
+						}
+						
+					}
+					$message='OK';
+				}
+				catch
+				{
+					$message=$_;
+				}
+			}
+		}
+
+		return($message);
+	}
+
+	hidden [string] GetRGLevelPIMRoles()
+	{
+		$message='';
+		if($null -eq $this.RGLevelPIMAssignments -and $null -eq $this.RGLevelPermanentAssignments)
+		{
+			$ResourceAppIdURI = [WebRequestHelper]::GetServiceManagementUrl()
+			$accessToken = [ContextHelper]::GetAccessToken($ResourceAppIdURI)
+			if($null -ne $AccessToken)
+			{
+				$authorisationToken = "Bearer " + $accessToken
+				$headers = @{"Authorization"=$authorisationToken;"Content-Type"="application/json"}
+				$uri=[Constants]::PIMAPIUri +"?`$filter=(type%20eq%20%27resourcegroup%27)%20and%20contains(tolower(externalId),%20%27{0}%27)&`$orderby=displayName" -f $this.SubscriptionContext.SubscriptionId.ToLower()
+				try
+				{
+					#Get external id for the current subscription
+					$response=[WebRequestHelper]::InvokeGetWebRequest($uri, $headers)
+					
+					$subId=$this.SubscriptionContext.SubscriptionId;
+					$extID=$response| Where-Object{$_.externalId.split('/') -contains $subId}
+					$resourceIDs=$extID.id;
+					$this.RGLevelPIMAssignments=@();
+					$this.RGLevelPermanentAssignments=@();
+					if($null -ne $response -and $null -ne $resourceIDs)
+					{
+						$loopCount = 0
+						foreach($resourceID in $resourceIDs)
+						{
+							#This check is to avoid too many API calls in a minute
+							$loopCount++;
+							if($loopCount -eq 400)
+							{
+								sleep 60;
+								$loopCount = 0
+							}
+							#Get RoleAssignments from PIM API 
+							$url=[string]::Format([Constants]::PIMAPIUri +"/{0}/roleAssignments?`$expand=subject,roleDefinition(`$expand=resource)", $resourceID)
+							$responseContent=[WebRequestHelper]::InvokeGetWebRequest($url, $headers)
+							foreach ($roleAssignment in $responseContent)
+							{
+								$item= New-Object TelemetryRBAC 
+								$item.SubscriptionId= $subId;
+								$item.RoleAssignmentId = $roleAssignment.externalId
+								$item.RoleDefinitionId=$roleAssignment.roleDefinition.templateId
+								$item.Scope=$roleAssignment.roleDefinition.resource.externalId;
+								$item.RoleDefinitionName = $roleAssignment.roleDefinition.displayName
+								$item.ObjectId = $roleAssignment.subject.id
+								$item.DisplayName = $roleAssignment.subject.displayName
+								$item.ObjectType=$roleAssignment.subject.type;
+								$item.MemberType = $roleAssignment.memberType;
+								if($roleAssignment.memberType -ne 'Inherited')
+								{
+									if($roleAssignment.IsPermanent -eq $false)
+									{
+										#If roleAssignment is non permanent and not active
+										$item.IsPIMEnabled=$true;
+										if($roleAssignment.assignmentState -eq "Eligible")
+										{
+											$this.RGLevelPIMAssignments.Add($item);
+										}
+									}
+									else
+									{
+										#If roleAssignment is permanent
+										$item.IsPIMEnabled=$false;
+										$this.RGLevelpermanentAssignments.Add($item);
+									}
 								}
 							}
-							else
-							{
-								#If roleAssignment is permanent
-								$item.IsPIMEnabled=$false;
-								$this.permanentAssignments.Add($item);
-
-							}
 						}
-				
 					}
 					$message='OK';
 				}
@@ -1144,6 +1539,7 @@ class SubscriptionCore: SVTBase
 	{
 		$AccessRoles= $this.RoleAssignments;
 		$PIMRoles=$this.PIMAssignments
+		
 		if($AccessRoles -ne $null)
 		{
 			$RBACAssignment = New-Object "System.Collections.Generic.List[TelemetryRBAC]"
@@ -1181,6 +1577,16 @@ class SubscriptionCore: SVTBase
 			if($null -ne $PIMRoles){
 				$RBACAssignment.AddRange($PIMRoles);
 			}
+			
+			if($null -ne $this.RGLevelPermanentAssignments)
+			{
+				$RBACAssignment.AddRange($this.RGLevelPermanentAssignments);
+			}
+			if($null -ne $this.RGLevelPIMAssignments)
+			{
+				$RBACAssignment.AddRange($this.RGLevelPIMAssignments);
+			}
+				
 			$this.CustomObject=New-Object CustomData;
 			$this.CustomObject.Value=$RBACAssignment;
 			$this.CustomObject.Name="RBACTelemetry";
@@ -1189,6 +1595,123 @@ class SubscriptionCore: SVTBase
 	
 	}
 
+	hidden [ControlResult] CheckCredentialHygiene([ControlResult] $controlResult)
+    {
+        $AzSKRG = [ConfigurationManager]::GetAzSKConfigData().AzSKRGName
+        $containerName = [Constants]::RotationMetadataContainerName
+        $StorageAccount = Get-AzStorageAccount -ResourceGroupName $AzSKRG -ErrorAction SilentlyContinue | Where-Object {$_.StorageAccountName -like 'azsk*'} -ErrorAction SilentlyContinue
+        $keys = $null;
+		
+		if($StorageAccount){
+			$keys = Get-AzStorageAccountKey -ResourceGroupName $AzSKRG -Name $StorageAccount.StorageAccountName -ErrorAction SilentlyContinue
+		}
+		
+		if($keys) #Adequate permissions to read credential metadata
+		{
+			$context = New-AzStorageContext -StorageAccountName $StorageAccount.StorageAccountName -StorageAccountKey $keys.Value[0]
+			$container = Get-AzStorageContainer -Name $containerName -Context $context -ErrorAction Ignore
+			
+			if($container){
+				$credBlobs = $container | Get-AzStorageBlob
 
+				$expiredCount = 0; # Count of credentials near to expiry (< 7d)/have expired
+				$aboutToExpireCount = 0; # Count of credentials approaching expiry (7d < expiry < 30d)
+				$healthyCount = 0; # Count of credentials far from expiry (> 30d)
+				[PSObject] $expiredCredentials = @(); # List of credentials near to expiry (< 7d)/have expired
+				[PSObject] $aboutToExpireCredentials = @(); # List of credentials approaching expiry (7d < expiry < 30d)
+				[PSObject] $healthyCredentials = @(); # List of credentials far from expiry (> 30d)
+				[CredHygieneAlert[]] $credAlertObject = @(); # Array of cred alert objects
 
+				$AzSKTemp = (Join-Path $([Constants]::AzSKAppFolderPath) $([Constants]::RotationMetadataSubPath)); 
+
+				$tempSubPath = Join-Path $AzSKTemp $($this.SubscriptionContext.SubscriptionId)
+
+				if(![string]::isnullorwhitespace($this.SubscriptionContext.SubscriptionId)){
+					if(-not (Test-Path $tempSubPath))
+					{
+						New-Item -ItemType Directory -Path $tempSubPath -ErrorAction Stop | Out-Null
+					}	
+				}
+				else{
+					if(-not (Test-Path $AzSKTemp))
+					{
+						New-Item -ItemType Directory -Path $AzSKTemp -ErrorAction Stop | Out-Null
+					}
+				}
+
+				$credBlobs | ForEach-Object{
+					$file = Join-Path $AzSKTemp -ChildPath $($this.SubscriptionContext.SubscriptionId) | Join-Path -ChildPath $($_.Name)
+					
+					$blobContent = Get-AzStorageBlobContent -Blob $_.Name -Container $container.Name -Context $context -Destination $file -Force -ErrorAction Ignore    
+					$credentialInfo = Get-ChildItem -Path $file -Force | Get-Content | ConvertFrom-Json
+
+					$currentTime = [DateTime]::UtcNow;
+					$lastRotatedTime = $credentialInfo.lastUpdatedOn;
+					$expiryTime = $lastRotatedTime.AddDays($credentialInfo.rotationInt);
+
+					# Preparing array of cred alert objects to send to LA.	
+					$credAlert = [CredHygieneAlert]::new()
+					$credAlert.ExpiryDueInDays = ($expiryTime - $currentTime).Days
+					if($credAlert.ExpiryDueInDays -le 0){
+						$credAlert.IsExpired = $true
+						$credAlert.ExpiryDueInDays = 0
+					}
+					else{
+						$credAlert.IsExpired = $false
+					}
+					
+					$credAlert.CredentialName = $credentialInfo.credName
+					
+					if([Helpers]::CheckMember($credentialInfo,"credGroup")){
+						$credAlert.CredentialGroup = $credentialInfo.credGroup
+					}
+					
+					$credAlert.LastUpdatedBy = $credentialInfo.lastUpdatedBy
+					$credAlert.SubscriptionId = $this.SubscriptionContext.SubscriptionId
+					$credAlert.SubscriptionName = $this.SubscriptionContext.SubscriptionName
+					$credAlertObject += $credAlert;
+					
+					if($expiryTime -le $currentTime.AddDays($this.ControlSettings.SubscriptionCore.credHighTH)){ #Checking for expired/about to expire credentials
+						$expiredCount += 1;
+						$expiredCredentials += $credentialInfo;
+					}
+					elseif(($expiryTime -gt $currentTime.AddDays($this.ControlSettings.SubscriptionCore.credHighTH)) -and ($expiryTime -le $currentTime.AddDays($this.ControlSettings.SubscriptionCore.credModerateTH))){ #Checking for credentials nearing expiry.
+						$aboutToExpireCount +=1;
+						$aboutToExpireCredentials += $credentialInfo;
+					}
+					else{#Checking for healthy credentials
+						$healthyCount +=1;
+						$healthyCredentials += $credentialInfo;
+					}
+				}
+
+				$this.PublishEvent([SVTEvent]::PostCredHygiene, $credAlertObject)
+
+				$controlResult.AddMessage("`nCredentials that have expired or are very close to expiry: $expiredCount `n", $expiredCredentials)
+				$controlResult.AddMessage("`nCredentials that are approaching expiry: $aboutToExpireCount `n", $aboutToExpireCredentials)
+				$controlResult.AddMessage("`nCredentials that are not near expiry: $healthyCount `n", $healthyCredentials)
+
+				if($expiredCount -gt 0){ # Fail the control if any expired/about to expire credential found
+					$controlResult.VerificationResult = [VerificationResult]::Failed;
+					$controlResult.AddMessage("`nPlease update them soon using the cmd Update-AzSKTrackedCredential with the 'ResetLastUpdate' switch with other required parameters (Subscription Id, credential name, etc.).`n")
+				}
+				elseif($aboutToExpireCount -gt 0){ # Verify the control if any credential approaching expiry found
+					$controlResult.VerificationResult = [VerificationResult]::Verify
+				}
+				else{ # No expired/about-to-expire credentials
+					$controlResult.VerificationResult = [VerificationResult]::Passed
+				}
+			}
+			else{ # No tracked credentials.
+				$controlResult.AddMessage([VerificationResult]::Passed, [MessageData]::new("There are no AzSK-tracked credentials in the subscription."))
+			}
+		}	
+		else
+		{
+			$controlResult.CurrentSessionContext.Permissions.HasRequiredAccess = $false;
+			$controlResult.AddMessage([VerificationResult]::Manual, [MessageData]::new("Insufficient permissions to read credential metadata."))
+		}	
+		return $controlResult
+    }
 }
+

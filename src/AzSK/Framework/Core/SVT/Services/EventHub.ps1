@@ -1,17 +1,10 @@
 #using namespace Microsoft.Azure.Commands.EventHub.Models
 Set-StrictMode -Version Latest 
-class EventHub: SVTBase
+class EventHub: AzSVTBase
 {       
 	hidden [PSObject[]] $NamespacePolicies = @();
 	hidden [PSObject[]] $EventHubs = @();
 	hidden [HashTable] $EHChildAccessPolicies = @{};
-
-    EventHub([string] $subscriptionId, [string] $resourceGroupName, [string] $resourceName): 
-        Base($subscriptionId, $resourceGroupName, $resourceName) 
-    { 
-		$this.GetEventHubDetails();
-		$this.GetEHAccessPolicies();
-    }
 
 	EventHub([string] $subscriptionId, [SVTResource] $svtResource): 
         Base($subscriptionId, $svtResource) 
@@ -25,7 +18,7 @@ class EventHub: SVTBase
         if (-not $this.NamespacePolicies) {
 			try
 			{
-				$this.NamespacePolicies = (Get-AzureRmEventHubAuthorizationRule -ResourceGroupName $this.ResourceContext.ResourceGroupName `
+				$this.NamespacePolicies = (Get-AzEventHubAuthorizationRule -ResourceGroupName $this.ResourceContext.ResourceGroupName `
 						-NamespaceName $this.ResourceContext.ResourceName | Select-Object Id, Name, Rights)
 			}
 			catch
@@ -38,7 +31,7 @@ class EventHub: SVTBase
 		if (-not $this.EventHubs) {
 			try
 			{
-				$this.EventHubs = Get-AzureRmEventHub -ResourceGroupName $this.ResourceContext.ResourceGroupName -NamespaceName $this.ResourceContext.ResourceName
+				$this.EventHubs = Get-AzEventHub -ResourceGroupName $this.ResourceContext.ResourceGroupName -NamespaceName $this.ResourceContext.ResourceName
 			}
 			catch
 			{
@@ -57,7 +50,7 @@ class EventHub: SVTBase
 			{
 				try
 				{
-					$eventHubPolicies = Get-AzureRmEventHubAuthorizationRule -ResourceGroupName $this.ResourceContext.ResourceGroupName `
+					$eventHubPolicies = Get-AzEventHubAuthorizationRule -ResourceGroupName $this.ResourceContext.ResourceGroupName `
 										-NamespaceName $this.ResourceContext.ResourceName -EventHubName $eventHub.Name
 
 					$this.EHChildAccessPolicies.Add($eventHub, ($eventHubPolicies | Select-Object Id, Name, Rights))	
@@ -163,8 +156,6 @@ class EventHub: SVTBase
 		}
         
 		#endregion
-           
-		$controlResult.VerificationResult = [VerificationResult]::Verify;
 
 		return $controlResult;
 	}

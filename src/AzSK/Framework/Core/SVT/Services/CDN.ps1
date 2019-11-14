@@ -1,13 +1,7 @@
 Set-StrictMode -Version Latest
-class CDN: SVTBase
+class CDN: AzSVTBase
 {
 	hidden [PSObject] $ResourceObject;
-
-	CDN([string] $subscriptionId, [string] $resourceGroupName, [string] $resourceName):
-        Base($subscriptionId, $resourceGroupName, $resourceName)
-    {
-        
-    }
 
     CDN([string] $subscriptionId, [SVTResource] $svtResource):
         Base($subscriptionId, $svtResource)
@@ -17,7 +11,7 @@ class CDN: SVTBase
 
 	hidden [ControlResult] CheckCDNHttpsProtocol([ControlResult] $controlResult)
 	{
-		$cdnEndpoints = Get-AzureRmCdnEndpoint -ProfileName $this.ResourceContext.ResourceName `
+		$cdnEndpoints = Get-AzCdnEndpoint -ProfileName $this.ResourceContext.ResourceName `
 							-ResourceGroupName $this.ResourceContext.ResourceGroupName `
 							-ErrorAction Stop
 		

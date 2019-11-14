@@ -105,8 +105,8 @@ class SVTResourceResolver: AzSKRoot
 			if($EnableDevOpsKitSetupCheck)
 			{
 				$settings = [ConfigurationManager]::GetAzSKSettings();
-				[string] $omsSource = $settings.OMSSource;
-				if([string]::IsNullOrWhiteSpace($omsSource) -or $omsSource -eq "SDL"){					
+				[string] $laSource = $settings.LASource;
+				if([string]::IsNullOrWhiteSpace($laSource) -or $laSource -eq "SDL"){					
 					$AzSKCfgResource= [SVTResource]::new();
 					$AzSKCfgResource.ResourceId = 'AzSKCfg';
 					$AzSKCfgResource.ResourceGroupName = 'AzSKCfg';
@@ -177,6 +177,7 @@ class SVTResourceResolver: AzSKRoot
 				$svtResource.ResourceName = $resource.Name;
 				$svtResource.ResourceType = $resource.ResourceType;
 				$svtResource.Location = $resource.Location;
+				$svtResource.ResourceDetails = $_
 
 				if($this.ResourceTypeName -ne [ResourceTypeName]::All)
 				{
@@ -210,7 +211,7 @@ class SVTResourceResolver: AzSKRoot
 					}
 
 					# Check if the resource group name corresponds to ERvNet
-					if(($erVnetResourceGroups -contains $svtResource.ResourceGroupName) -or ([Helpers]::IsvNetExpressRouteConnected($svtResource.ResourceName, $svtResource.ResourceGroupName)))
+					if(($erVnetResourceGroups -contains $svtResource.ResourceGroupName) -or ([ResourceHelper]::IsvNetExpressRouteConnected($svtResource.ResourceName, $svtResource.ResourceGroupName)))
 					{
 						# Set the ERvNet type
 						$svtResource.ResourceTypeMapping = ([SVTMapping]::Mapping |
@@ -232,7 +233,7 @@ class SVTResourceResolver: AzSKRoot
 				}
 			}
 			$this.SVTResourcesFoundCount = ($this.SVTResources | Measure-Object).Count
-					
+				
 			if((($this.ExcludeResourceGroupNames | Measure-Object).Count -gt 0) -or (($this.ExcludeResourceNames)| Measure-Object).Count -gt 0 -or (($this.ExcludeResourceTypeName) -ne 'All'))
 			{
 				$this.SVTResources = $this.ApplyResourceFilter($this.SVTResources)
@@ -259,7 +260,7 @@ class SVTResourceResolver: AzSKRoot
 
 	hidden [System.Object[]] FindAzureRmResource([string] $resourceGroupName)
 	{
-		$expression = "Get-AzureRmResource";
+		$expression = "Get-AzResource";
 
 		if(-not [string]::IsNullOrEmpty($resourceGroupName))
 		{
@@ -304,12 +305,19 @@ class SVTResourceResolver: AzSKRoot
 		{
 			$result += $expressionResult
 		}
-					 
-		if((-not [string]::IsNullOrEmpty($this.TagName)) -and (-not [string]::IsNullOrEmpty($this.TagValue) -and ($this.TagValue | Measure-Object).Count -gt 0))
+		
+		#To filter result based on just TagName if TagValue is not provided
+		if(-not [string]::IsNullOrEmpty($this.TagName))
 		{
-				$this.TagValue= $this.ConvertToStringArray($this.TagValue)
 				$result = $result | Where-Object {$null -ne $_.Tags -and ($null -ne $_.Tags.Keys )}
-				$result = $result | Where-Object{($_.Tags.GetEnumerator() | Where-Object {$_.Key -eq $this.TagName -and $_.Value -in $this.TagValue })}
+				if ([string]::IsNullOrEmpty($this.TagValue))
+				{
+					$result = $result | Where-Object{($_.Tags.GetEnumerator() | Where-Object {$_.Key -eq $this.TagName })}
+				}
+				else {
+					$this.TagValue= $this.ConvertToStringArray($this.TagValue)
+					$result = $result | Where-Object{($_.Tags.GetEnumerator() | Where-Object {$_.Key -eq $this.TagName -and $_.Value -in $this.TagValue })}
+				}
 		}		
 		 
 		return $result;

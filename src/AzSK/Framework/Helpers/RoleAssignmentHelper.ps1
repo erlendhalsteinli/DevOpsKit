@@ -10,11 +10,11 @@ class RoleAssignmentHelper
 		{
 			if($includeClassicAdministrators)
 			{
-				$roleAssignments = Get-AzureRmRoleAssignment -Scope $scope -IncludeClassicAdministrators -ErrorAction Stop;
+				$roleAssignments = Get-AzRoleAssignment -Scope $scope -IncludeClassicAdministrators -ErrorAction Stop;
 			}
 			else
 			{
-				$roleAssignments = Get-AzureRmRoleAssignment -Scope $scope -ErrorAction Stop;
+				$roleAssignments = Get-AzRoleAssignment -Scope $scope -ErrorAction Stop;
 			}
 			return $roleAssignments;		
 		}
@@ -22,7 +22,7 @@ class RoleAssignmentHelper
 		{ 
 			# Eat the current exception which typically happens when the caller doesn't have access to GraphAPI. It will fall back to the below custom API based approach.
 		}
-        $rmContext = [Helpers]::GetCurrentRMContext();
+        $rmContext = [ContextHelper]::GetCurrentRMContext();
 		$ResourceAppIdURI = [WebRequestHelper]::GetResourceManagerUrl()
 		$requestUri = $ResourceAppIdURI + $scope;
 		$roleAssignments = [RoleAssignmentHelper]::GetRMRoleAssignment($requestUri, $recurse);
@@ -40,18 +40,30 @@ class RoleAssignmentHelper
 		{
 			if($includeClassicAdministrators)
 			{
-				$roleAssignments = Get-AzureRmRoleAssignment -IncludeClassicAdministrators -ErrorAction Stop;
+				try{
+					$roleAssignments = Get-AzRoleAssignment -IncludeClassicAdministrators -ErrorAction Stop;
+				}
+				catch{
+					# Handling the cloud exception in case of CSP subs
+					if([Helpers]::CheckMember($_, "CategoryInfo.Reason"))
+						{
+							if($_.CategoryInfo.Reason.ToString().ToLower() -eq "cloudexception")
+								{
+										$roleAssignments = Get-AzRoleAssignment -ErrorAction Stop;
+								}
+						}
+				}
 			}
 			else
 			{
-				$roleAssignments = Get-AzureRmRoleAssignment -ErrorAction Stop;
+				$roleAssignments = Get-AzRoleAssignment -ErrorAction Stop;
 			}
 			return $roleAssignments;
 		}
-		catch
-		{ 
+        catch
+        {
 			# Eat the current exception which typically happens when the caller doesn't have access to GraphAPI. It will fall back to the below custom API based approach.
-		}
+        }
 
 		$roleAssignments = [RoleAssignmentHelper]::GetAzSKRoleAssignment("", "", "", $recurse, $includeClassicAdministrators);
 		
@@ -65,18 +77,31 @@ class RoleAssignmentHelper
 		{
 			if($includeClassicAdministrators)
 			{
-				$roleAssignments = Get-AzureRmRoleAssignment -ResourceGroupName $resourceGroupName -IncludeClassicAdministrators -ErrorAction Stop;
+				try{
+				$roleAssignments = Get-AzRoleAssignment -ResourceGroupName $resourceGroupName -IncludeClassicAdministrators -ErrorAction Stop;
+				}
+				catch{
+					# Handling the cloud exception in case of CSP subs
+					if([Helpers]::CheckMember($_, "CategoryInfo.Reason"))
+					{
+						if($_.CategoryInfo.Reason.ToString().ToLower() -eq "cloudexception")
+						{
+		
+							$roleAssignments = Get-AzRoleAssignment -ErrorAction Stop;
+						}
+					}
+				}
 			}
 			else
 			{
-				$roleAssignments = Get-AzureRmRoleAssignment -ResourceGroupName $resourceGroupName -ErrorAction Stop;
+				$roleAssignments = Get-AzRoleAssignment -ResourceGroupName $resourceGroupName -ErrorAction Stop;
 			}
 			return $roleAssignments;
 		}
-		catch
-		{ 
+        catch
+        {
 			# Eat the current exception which typically happens when the caller doesn't have access to GraphAPI. It will fall back to the below custom API based approach.
-		}
+        }
 
 		$roleAssignments = [RoleAssignmentHelper]::GetAzSKRoleAssignment($resourceGroupName, "", "", $recurse, $includeClassicAdministrators);
 		
@@ -90,21 +115,34 @@ class RoleAssignmentHelper
 		{
 			if($includeClassicAdministrators)
 			{
-				$roleAssignments = Get-AzureRmRoleAssignment -ResourceGroupName $resourceGroupName -ResourceName $resourceName -ResourceType $resourceType -IncludeClassicAdministrators -ErrorAction Stop;
+				try{
+				$roleAssignments = Get-AzRoleAssignment -ResourceGroupName $resourceGroupName -ResourceName $resourceName -ResourceType $resourceType -IncludeClassicAdministrators -ErrorAction Stop;
+				}
+				catch{
+					# Handling the cloud exception in case of CSP subs
+					if([Helpers]::CheckMember($_, "CategoryInfo.Reason"))
+					{
+						if($_.CategoryInfo.Reason.ToString().ToLower() -eq "cloudexception")
+						{
+		
+							$roleAssignments = Get-AzRoleAssignment -ErrorAction Stop;
+						}
+					}
+				}
 			}
 			else
 			{
-				$roleAssignments = Get-AzureRmRoleAssignment -ResourceGroupName $resourceGroupName -ResourceName $resourceName -ResourceType $resourceType -ErrorAction Stop;
+				$roleAssignments = Get-AzRoleAssignment -ResourceGroupName $resourceGroupName -ResourceName $resourceName -ResourceType $resourceType -ErrorAction Stop;
 			}
 
 			return $roleAssignments;
 		}
-		catch
-		{ 
+        catch
+        {
 			# Eat the current exception which typically happens when the caller doesn't have access to GraphAPI. It will fall back to the below custom API based approach.
-		}
+        }
 
-		$currentContext = [Helpers]::GetCurrentRMContext();
+		$currentContext = [ContextHelper]::GetCurrentRMContext();
         $subscriptionId = $currentContext.Subscription.Id;
         $ResourceAppIdURI = [WebRequestHelper]::GetResourceManagerUrl()
 		$subscriptionPath = "subscriptions/$subscriptionId";
@@ -153,7 +191,7 @@ class RoleAssignmentHelper
 				$roleDefinitionId = $_.roleDefinitionId.Substring($_.roleDefinitionId.LastIndexOf("/") + 1);
 				$roleDefinitionName = [string]::Empty
 		
-				$roleDefinition = (Get-AzureRmRoleDefinition -Id $roleDefinitionId -ErrorAction SilentlyContinue) | Select-Object -First 1
+				$roleDefinition = (Get-AzRoleDefinition -Id $roleDefinitionId -ErrorAction SilentlyContinue) | Select-Object -First 1
 				if($roleDefinition -and [Helpers]::CheckMember($roleDefinition,"Name")) 
 				{ 
 					$roleDefinitionName = $roleDefinition.Name;
@@ -222,7 +260,7 @@ class RoleAssignmentHelper
 
 	hidden static [PSRoleAssignment[]] GetAzSKClassicAdministrators()
 	{
-		$currentContext = [Helpers]::GetCurrentRMContext();
+		$currentContext = [ContextHelper]::GetCurrentRMContext();
         $subscriptionId = $currentContext.Subscription.Id;
         $ResourceAppIdURI = [WebRequestHelper]::GetResourceManagerUrl()
 		$subscriptionPath = "subscriptions/$subscriptionId";
@@ -250,10 +288,10 @@ class RoleAssignmentHelper
 
 	hidden static [System.Object[]] GetADObjectsByObjectIds([string[]] $objectIds)
 	{
-		$rmContext = [Helpers]::GetCurrentRMContext();
+		$rmContext = [ContextHelper]::GetCurrentRMContext();
 		$tenantId = $rmContext.Tenant.Id
-
-		$uri = [WebRequestHelper]::GraphApiUri + "$tenantId/getObjectsByObjectIds?api-version=1.6"
+        $GraphUri = [WebRequestHelper]::GetGraphUrl()
+		$uri = $GraphUri + "$tenantId/getObjectsByObjectIds?api-version=1.6"
 		$body = "{`"objectIds`":" + ($objectIds | ConvertTo-Json ) + "}";
 		$webResponse = @();
 		
@@ -271,10 +309,10 @@ class RoleAssignmentHelper
 	hidden static [bool] HasGraphAccess()
 	{
 		$hasAccess = $false;
-		$rmContext = [Helpers]::GetCurrentRMContext()
+		$rmContext = [ContextHelper]::GetCurrentRMContext()
 		$tenantId = $rmContext.Tenant.Id
-	
-		$uri = [WebRequestHelper]::GraphApiUri + "$tenantId/users?`$top=1&api-version=1.6"
+	    $GraphUri = [WebRequestHelper]::GetGraphUrl()
+		$uri = $GraphUri + "$tenantId/users?`$top=1&api-version=1.6"
 		$webResponse = @();
 		
 		try

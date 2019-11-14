@@ -1,7 +1,7 @@
 using namespace System.Management.Automation
 Set-StrictMode -Version Latest 
 
-class PersistedStateInfo: CommandBase
+class PersistedStateInfo: AzCommandBase
 {    
 	
 	hidden [PSObject] $AzSKRG = $null
@@ -13,7 +13,7 @@ class PersistedStateInfo: CommandBase
     { 
 		#$this.DoNotOpenOutputFolder = $true;
 		$this.AzSKRGName = [ConfigurationManager]::GetAzSKConfigData().AzSKRGName;
-		$this.AzSKRG = Get-AzureRmResourceGroup -Name $this.AzSKRGName -ErrorAction SilentlyContinue
+		$this.AzSKRG = Get-AzResourceGroup -Name $this.AzSKRGName -ErrorAction SilentlyContinue
 	}
 	
 

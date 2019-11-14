@@ -140,7 +140,7 @@ Follow the steps below to add a manual control:</br>
 > * ControlID, Id should not be repeated/duplicated.
 
 **Add automated control**</br>
-You may also add controls that can be automated using AzureRm PowerShell or ARM API calls. Before automating a control, make sure you have knowledge about the permissions/access required to validate the control.
+You may also add controls that can be automated using Az PowerShell or ARM API calls. Before automating a control, make sure you have knowledge about the permissions/access required to validate the control.
 
 Follow the steps below to add an automated control:</br>
 **1.** Add control entry in the policy file for the Azure Service that can be found under the path "AzSK\Framework\Configurations\SVT\Services\<FeatureName>.Json".
@@ -177,8 +177,8 @@ hidden [ControlResult] <ControlMethodName>([ControlResult] $controlResult)
 		  $controlResult.VerificationResult = [VerificationResult]::Verify;  # Valid values are - Passed, Verify, Failed, NotSupported, Error 
  
 		  # Add any number of messages and data objects using function $controlResult.AddMessage(). 
-		  #	Refer file 'AzSDK\Framework\Models\AzSdkEvent.ps1' for definition of 'MessageData' class and its possible contractors. 
-		  #	Refer file 'AzSDK\Framework\Models\SVTEvent.ps1' for definition of 'ControlResult' class and its possible overloads for 'AddMessage' function.
+		  #	Refer file 'AzSK\Framework\Models\AzSkEvent.ps1' for definition of 'MessageData' class and its possible contractors. 
+		  #	Refer file 'AzSK\Framework\Models\SVTEvent.ps1' for definition of 'ControlResult' class and its possible overloads for 'AddMessage' function.
 		  #	Some of the overloads are listed below:
 		  $controlResult.AddMessage("Message text here");
 		  $controlResult.AddMessage([MessageData]::new("Message text here", $<data object containing values to be logged in detailed logs>)); 

@@ -1,11 +1,12 @@
 using namespace System.Management.Automation
 Set-StrictMode -Version Latest 
 
-class ControlsInfo: CommandBase
+class ControlsInfo: AzCommandBase
 {    
 	hidden [string] $ResourceTypeName
 	hidden [string] $ResourceType
 	hidden [bool] $BaslineControls
+	hidden [bool] $PreviewBaslineControls
 	hidden [PSObject] $ControlSettings
 	hidden [string[]] $Tags = @();
 	hidden [string[]] $ControlIds = @();
@@ -14,12 +15,13 @@ class ControlsInfo: CommandBase
 	hidden [string] $ControlSeverity
 	hidden [string] $ControlIdContains
 
-	ControlsInfo([string] $subscriptionId, [InvocationInfo] $invocationContext, [string] $resourceTypeName, [string] $resourceType, [string] $controlIds, [bool] $baslineControls, [string] $tags, [bool] $full, 
+	ControlsInfo([string] $subscriptionId, [InvocationInfo] $invocationContext, [string] $resourceTypeName, [string] $resourceType, [string] $controlIds, [bool] $baslineControls,[bool] $previewBaslineControls, [string] $tags, [bool] $full, 
 					[string] $controlSeverity, [string] $controlIdContains) :  Base($subscriptionId, $invocationContext)
     { 
 		$this.ResourceTypeName = $resourceTypeName;
 		$this.ResourceType = $resourceType;
 		$this.BaslineControls = $baslineControls;
+		$this.PreviewBaslineControls = $previewBaslineControls
 		$this.Full = $full;
 		$this.ControlSeverity = $controlSeverity;
 		$this.ControlIdContains = $controlIdContains
@@ -83,9 +85,35 @@ class ControlsInfo: CommandBase
 		$baselineControls = @();
 		$baselineControls += $this.ControlSettings.BaselineControls.ResourceTypeControlIdMappingList | Select-Object ControlIds | ForEach-Object {  $_.ControlIds }
 		$baselineControls += $this.ControlSettings.BaselineControls.SubscriptionControlIdList | ForEach-Object { $_ }
+		
+		
+		
 		if($this.BaslineControls)
 		{
 			$this.ControlIds = $baselineControls
+		}
+
+		$previewBaselineControls = @();
+
+		if([Helpers]::CheckMember($this.ControlSettings,"PreviewBaselineControls.ResourceTypeControlIdMappingList") )
+		{
+			$previewBaselineControls += $this.ControlSettings.PreviewBaselineControls.ResourceTypeControlIdMappingList | Select-Object ControlIds | ForEach-Object {  $_.ControlIds }
+		}
+		if([Helpers]::CheckMember($this.ControlSettings,"PreviewBaselineControls.SubscriptionControlIdList") )
+		{
+			$previewBaselineControls += $this.ControlSettings.PreviewBaselineControls.SubscriptionControlIdList | ForEach-Object {  $_ }
+		}
+
+		if($this.PreviewBaslineControls)
+		{
+			#If preview baseline switch is passed and there is no preview baseline control list present then throw exception 
+			if (($previewBaselineControls | Measure-Object).Count -eq 0 -and -not $this.BaslineControls) 
+			{
+				throw ([SuppressedException]::new(("There are no preview baseline controls defined for this policy."), [SuppressedExceptionType]::Generic))
+			}
+			
+			$this.ControlIds += $previewBaselineControls
+
 		}
 
 		$resourcetypes | ForEach-Object{
@@ -126,9 +154,6 @@ class ControlsInfo: CommandBase
 
 		if($SVTConfig.Keys.Count -gt 0)
 		{
-			$this.PublishCustomMessage([Constants]::DoubleDashLine, [MessageType]::Default);
-			$this.PublishCustomMessage("`r`nFetching security controls details...", [MessageType]::Default);
-			$this.PublishCustomMessage([Constants]::DoubleDashLine, [MessageType]::Default);
 
 			$SVTConfig.Keys  | Foreach-Object {
 				$featureName = $_
@@ -152,6 +177,25 @@ class ControlsInfo: CommandBase
 					{
 						$isBaselineControls = "No"
 					}
+
+					if($previewBaselineControls -contains $_.ControlID)
+					{
+						$isPreviewBaselineControls = "Yes"
+					}
+					else
+					{
+						$isPreviewBaselineControls = "No"
+					}
+
+					$ControlSeverity = $_.ControlSeverity
+					if([Helpers]::CheckMember($this.ControlSettings,"ControlSeverity.$ControlSeverity"))
+					{
+						$_.ControlSeverity = $this.ControlSettings.ControlSeverity.$ControlSeverity
+					}
+					else
+					{
+						$_.ControlSeverity = $ControlSeverity
+					}
 										
 					$ctrlObj = New-Object -TypeName PSObject
 					$ctrlObj | Add-Member -NotePropertyName FeatureName -NotePropertyValue $featureName 
@@ -159,12 +203,13 @@ class ControlsInfo: CommandBase
 					$ctrlObj | Add-Member -NotePropertyName Description -NotePropertyValue $_.Description
 					$ctrlObj | Add-Member -NotePropertyName ControlSeverity -NotePropertyValue $_.ControlSeverity
 					$ctrlObj | Add-Member -NotePropertyName IsBaselineControl -NotePropertyValue $isBaselineControls
+					$ctrlObj | Add-Member -NotePropertyName IsPreviewBaselineControl -NotePropertyValue $isPreviewBaselineControls
 					$ctrlObj | Add-Member -NotePropertyName Rationale -NotePropertyValue $_.Rationale
 					$ctrlObj | Add-Member -NotePropertyName Recommendation -NotePropertyValue $_.Recommendation
 					$ctrlObj | Add-Member -NotePropertyName Automated -NotePropertyValue $_.Automated
 					$ctrlObj | Add-Member -NotePropertyName SupportsAutoFix -NotePropertyValue $fixControl
 					$tags = [system.String]::Join(", ", $_.Tags)
-					$ctrlObj | Add-Member -NotePropertyName Tags -NotePropertyValue $tags
+					$ctrlObj | Add-Member -NotePropertyName Tags -NotePropertyValue $tags 
 
 					$allControls += $ctrlObj
 
@@ -178,18 +223,18 @@ class ControlsInfo: CommandBase
 				$ctrlSummary = New-Object -TypeName PSObject
 				$ctrlSummary | Add-Member -NotePropertyName FeatureName -NotePropertyValue $featureName 
 				$ctrlSummary | Add-Member -NotePropertyName Total -NotePropertyValue ($SVTConfig[$_]).Count
-				$ctrlSummary | Add-Member -NotePropertyName Critical -NotePropertyValue (($SVTConfig[$_] | Where-Object { $_.ControlSeverity -eq "Critical" })|Measure-Object).Count
-				$ctrlSummary | Add-Member -NotePropertyName High -NotePropertyValue (($SVTConfig[$_] | Where-Object { $_.ControlSeverity -eq "High" })|Measure-Object).Count
-				$ctrlSummary | Add-Member -NotePropertyName Medium -NotePropertyValue (($SVTConfig[$_] | Where-Object { $_.ControlSeverity -eq "Medium" })|Measure-Object).Count
-				$ctrlSummary | Add-Member -NotePropertyName Low -NotePropertyValue (($SVTConfig[$_] | Where-Object { $_.ControlSeverity -eq "Low" })|Measure-Object).Count
+				$ctrlSummary | Add-Member -NotePropertyName $this.GetControlSeverity('Critical') -NotePropertyValue (($SVTConfig[$_] | Where-Object { $_.ControlSeverity -eq $this.GetControlSeverity("Critical") })|Measure-Object).Count
+				$ctrlSummary | Add-Member -NotePropertyName $this.GetControlSeverity('High') -NotePropertyValue (($SVTConfig[$_] | Where-Object { $_.ControlSeverity -eq $this.GetControlSeverity("High") })|Measure-Object).Count
+				$ctrlSummary | Add-Member -NotePropertyName $this.GetControlSeverity('Medium') -NotePropertyValue (($SVTConfig[$_] | Where-Object { $_.ControlSeverity -eq $this.GetControlSeverity("Medium") })|Measure-Object).Count
+				$ctrlSummary | Add-Member -NotePropertyName $this.GetControlSeverity('Low') -NotePropertyValue (($SVTConfig[$_] | Where-Object { $_.ControlSeverity -eq $this.GetControlSeverity("Low") })|Measure-Object).Count
 				$controlSummary += $ctrlSummary
 			}
 
 			$controlCSV = New-Object -TypeName WriteCSVData
-			$controlCSV.FileName = 'Control Details'
+			$controlCSV.FileName = 'Control_Details_' + [String] $this.InvocationContext.Mycommand.ModuleName + "_" + [String] $this.GetCurrentModuleVersion()
 			$controlCSV.FileExtension = 'csv'
 			$controlCSV.FolderPath = ''
-			$controlCSV.MessageData = $allControls
+			$controlCSV.MessageData = $allControls| Sort-Object FeatureName, ControlSeverity
 
 			$this.PublishAzSKRootEvent([AzSKRootEvent]::WriteCSV, $controlCSV);
 		}
@@ -203,26 +248,25 @@ class ControlsInfo: CommandBase
 		if($controlSummary.Count -gt 0)
 		{
 			$this.PublishCustomMessage([Constants]::DoubleDashLine, [MessageType]::Default);
-			$this.PublishCustomMessage("`r`Completed fetching security controls details...", [MessageType]::Default);
-			$this.PublishCustomMessage([Constants]::SingleDashLine, [MessageType]::Default);
-			$this.PublishCustomMessage("Summary", [MessageType]::Default)
-			$this.PublishCustomMessage([Constants]::SingleDashLine, [MessageType]::Default);
+			$this.PublishCustomMessage("Summary of controls available in " + $this.InvocationContext.Mycommand.ModuleName +" "+  $this.GetCurrentModuleVersion(), [MessageType]::Default)
+			$this.PublishCustomMessage([Constants]::DoubleDashLine, [MessageType]::Default);
 
 			$ctrlSummary = New-Object -TypeName PSObject
 			$ctrlSummary | Add-Member -NotePropertyName FeatureName -NotePropertyValue "Total" 
 			$ctrlSummary | Add-Member -NotePropertyName Total -NotePropertyValue ($controlSummary | Measure-Object 'Total' -Sum).Sum
-			$ctrlSummary | Add-Member -NotePropertyName Critical -NotePropertyValue ($controlSummary | Measure-Object 'Critical' -Sum).Sum
-			$ctrlSummary | Add-Member -NotePropertyName High -NotePropertyValue ($controlSummary | Measure-Object 'High' -Sum).Sum
-			$ctrlSummary | Add-Member -NotePropertyName Medium -NotePropertyValue ($controlSummary | Measure-Object 'Medium' -Sum).Sum
-			$ctrlSummary | Add-Member -NotePropertyName Low -NotePropertyValue ($controlSummary | Measure-Object 'Low' -Sum).Sum
+
+			$ctrlSummary | Add-Member -NotePropertyName $this.GetControlSeverity('Critical') -NotePropertyValue ($controlSummary | Measure-Object "$($this.GetControlSeverity('Critical'))" -Sum).Sum
+			$ctrlSummary | Add-Member -NotePropertyName $this.GetControlSeverity('High') -NotePropertyValue ($controlSummary | Measure-Object "$($this.GetControlSeverity('High'))" -Sum).Sum
+			$ctrlSummary | Add-Member -NotePropertyName $this.GetControlSeverity('Medium') -NotePropertyValue ($controlSummary | Measure-Object "$($this.GetControlSeverity('Medium'))" -Sum).Sum
+			$ctrlSummary | Add-Member -NotePropertyName $this.GetControlSeverity('Low') -NotePropertyValue ($controlSummary | Measure-Object "$($this.GetControlSeverity('Low'))" -Sum).Sum
 
 			$totalSummaryMarker = New-Object -TypeName PSObject
 			$totalSummaryMarker | Add-Member -NotePropertyName FeatureName -NotePropertyValue $this.SummaryMarkerText
 			$totalSummaryMarker | Add-Member -NotePropertyName Total -NotePropertyValue $this.SummaryMarkerText
-			$totalSummaryMarker | Add-Member -NotePropertyName Critical -NotePropertyValue $this.SummaryMarkerText
-			$totalSummaryMarker | Add-Member -NotePropertyName High -NotePropertyValue $this.SummaryMarkerText
-			$totalSummaryMarker | Add-Member -NotePropertyName Medium -NotePropertyValue $this.SummaryMarkerText
-			$totalSummaryMarker | Add-Member -NotePropertyName Low -NotePropertyValue $this.SummaryMarkerText
+			$totalSummaryMarker | Add-Member -NotePropertyName $this.GetControlSeverity('Critical') -NotePropertyValue $this.SummaryMarkerText
+			$totalSummaryMarker | Add-Member -NotePropertyName $this.GetControlSeverity('High') -NotePropertyValue $this.SummaryMarkerText
+			$totalSummaryMarker | Add-Member -NotePropertyName $this.GetControlSeverity('Medium') -NotePropertyValue $this.SummaryMarkerText
+			$totalSummaryMarker | Add-Member -NotePropertyName $this.GetControlSeverity('Low') -NotePropertyValue $this.SummaryMarkerText
 
 			$controlSummary += $totalSummaryMarker
 			$controlSummary += $ctrlSummary
@@ -230,7 +274,16 @@ class ControlsInfo: CommandBase
 			$this.PublishCustomMessage(($controlSummary | Format-Table | Out-String), [MessageType]::Default)
 		}
         
-    }
+	}
+	
+	[string] GetControlSeverity($ControlSeverityFromServer)
+	{
+		if([Helpers]::CheckMember($this.ControlSettings,"ControlSeverity.$ControlSeverityFromServer"))
+		{
+			$ControlSeverityFromServer = $this.ControlSettings.ControlSeverity.$ControlSeverityFromServer
+		}
+		return $ControlSeverityFromServer
+	}
 }
 
 class WriteCSVData

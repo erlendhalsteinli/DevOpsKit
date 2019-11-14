@@ -1,18 +1,12 @@
 using namespace Microsoft.Azure.Commands.KeyVault.Models
 Set-StrictMode -Version Latest 
-class KeyVault: SVTBase
+class KeyVault: AzSVTBase
 {       
     hidden [PSKeyVaultIdentityItem] $ResourceObject;
     hidden [PSObject[]] $AllEnabledKeys = $null;
     hidden [PSObject[]] $AllEnabledSecrets = $null;
 	hidden [boolean] $HasFetchKeysPermissions=$false;
 	hidden [boolean] $HasFetchSecretsPermissions=$true;
-    KeyVault([string] $subscriptionId, [string] $resourceGroupName, [string] $resourceName): 
-        Base($subscriptionId, $resourceGroupName, $resourceName) 
-    { 
-        $this.GetResourceObject();
-		$this.CheckCurrentContextPermissionsOnVaultObjects();
-    }
 
     KeyVault([string] $subscriptionId, [SVTResource] $svtResource): 
         Base($subscriptionId, $svtResource) 
@@ -25,7 +19,7 @@ class KeyVault: SVTBase
     {
         if (-not $this.ResourceObject) 
 		{
-            $this.ResourceObject = Get-AzureRmKeyVault -VaultName $this.ResourceContext.ResourceName `
+            $this.ResourceObject = Get-AzKeyVault -VaultName $this.ResourceContext.ResourceName `
                                             -ResourceGroupName $this.ResourceContext.ResourceGroupName
             if(-not $this.ResourceObject)
             {
@@ -37,17 +31,17 @@ class KeyVault: SVTBase
 	hidden [void] CheckCurrentContextPermissionsOnVaultObjects()
 	{
 
-		$currentContext=[Helpers]::GetCurrentRMContext();
+		$currentContext=[ContextHelper]::GetCurrentRMContext();
 		$CurrentContextId=$currentContext.Account.Id;
 		$CurrentContextObjectId=$null
 		try{
 				if($currentContext.Account.Type -eq 'User')
 				{
-					$CurrentContextObjectId=Get-AzureRmADUser -UserPrincipalName $CurrentContextId|Select-Object -Property Id
+					$CurrentContextObjectId=Get-AzADUser -UserPrincipalName $CurrentContextId|Select-Object -Property Id
 				}
 				elseif($currentContext.Account.Type -eq 'ServicePrincipal')
 				{
-					$CurrentContextObjectId=Get-AzureRmADServicePrincipal -ServicePrincipalName $CurrentContextId|Select-Object -Property Id
+					$CurrentContextObjectId=Get-AzADServicePrincipal -ServicePrincipalName $CurrentContextId|Select-Object -Property Id
 				}
 				$accessPolicies = $this.ResourceObject.AccessPolicies
 				$currentContextAccess=$accessPolicies|Where-Object{$_.ObjectId -eq $CurrentContextObjectId.Id }
@@ -118,17 +112,18 @@ class KeyVault: SVTBase
 					try
 					{
 						$keysResult = @();
-						$keysResult += Get-AzureKeyVaultKey -VaultName $this.ResourceContext.ResourceName -ErrorAction Stop | 
+						$keysResult += Get-AzKeyVaultKey -VaultName $this.ResourceContext.ResourceName -ErrorAction Stop | 
 										Where-Object { $_.Enabled -eq $true };
-
+						
 						$this.AllEnabledKeys = @();
 						if($keysResult.Count -gt 0) 
 						{
 							$keysResult | ForEach-Object {
-								Get-AzureKeyVaultKey -VaultName $this.ResourceContext.ResourceName -Name $_.Name -IncludeVersions |
+								Get-AzKeyVaultKey -VaultName $this.ResourceContext.ResourceName -Name $_.Name -IncludeVersions |
 								Where-Object { $_.Enabled -eq $true } | 
+                                Select-Object -First $this.ControlSettings.KeyVault.MaxRecommendedVersions |
 								ForEach-Object {
-									$this.AllEnabledKeys += Get-AzureKeyVaultKey -VaultName $this.ResourceContext.ResourceName -Name $_.Name -Version $_.Version ;
+                                    $this.AllEnabledKeys += Get-AzKeyVaultKey -VaultName $this.ResourceContext.ResourceName -Name $_.Name -Version $_.Version ;
 								}
 							}
 						}
@@ -169,17 +164,18 @@ class KeyVault: SVTBase
 				try
 				{
 					$secretsResult = @();
-					$secretsResult += Get-AzureKeyVaultSecret -VaultName $this.ResourceContext.ResourceName -ErrorAction Stop | 
+					$secretsResult += Get-AzKeyVaultSecret -VaultName $this.ResourceContext.ResourceName -ErrorAction Stop | 
 									Where-Object { $_.Enabled -eq $true };
 
 					$this.AllEnabledSecrets = @();
 					if($secretsResult.Count -gt 0) 
 					{
 						$secretsResult | ForEach-Object {
-							Get-AzureKeyVaultSecret -VaultName $this.ResourceContext.ResourceName -Name $_.Name -IncludeVersions |
+							Get-AzKeyVaultSecret -VaultName $this.ResourceContext.ResourceName -Name $_.Name -IncludeVersions |
 							Where-Object { $_.Enabled -eq $true } | 
+                            Select-Object -First $this.ControlSettings.KeyVault.MaxRecommendedVersions |
 							ForEach-Object {
-								$this.AllEnabledSecrets += Get-AzureKeyVaultSecret -VaultName $this.ResourceContext.ResourceName -Name $_.Name -Version $_.Version ;
+								$this.AllEnabledSecrets += Get-AzKeyVaultSecret -VaultName $this.ResourceContext.ResourceName -Name $_.Name -Version $_.Version ;
 							}
 						}
 					}
@@ -273,7 +269,7 @@ class KeyVault: SVTBase
               $appList = $this.GetAzureRmKeyVaultApplications()
               $appList |
                 ForEach-Object {
-                    $credentials = Get-AzureRmADAppCredential -ApplicationId $_.ApplicationId
+                    $credentials = Get-AzADAppCredential -ApplicationId $_.ApplicationId
                     $compliance =  if (($credentials| Where-Object { $_.Type -eq $this.ControlSettings.KeyVault.ADAppCredentialTypePwd } | Measure-Object).Count -eq 0 ) { "Yes" } else { "No" } ;
                     $output = New-Object System.Object
                     $output | Add-Member -type NoteProperty -name AzureADAppName -Value $_.DisplayName
@@ -321,7 +317,7 @@ class KeyVault: SVTBase
     }
 
    
-	hidden [ControlResult] CheckAppsSharingKayVault([ControlResult] $controlResult)
+	hidden [ControlResult] CheckAppsSharingKeyVault([ControlResult] $controlResult)
 	{
 		$appList = $this.GetAzureRmKeyVaultApplications() 
       
@@ -510,9 +506,9 @@ class KeyVault: SVTBase
         $applicationList = @();
         $this.ResourceObject.AccessPolicies  | 
         ForEach-Object { 
-            $svcPrincipal= Get-AzureRmADServicePrincipal -ObjectId $_.ObjectId
+            $svcPrincipal= Get-AzADServicePrincipal -ObjectId $_.ObjectId
             if($svcPrincipal){
-                $application = Get-AzureRmADApplication -ApplicationId $svcPrincipal.ApplicationId
+                $application = Get-AzADApplication -ApplicationId $svcPrincipal.ApplicationId
                 if($application){
                     $applicationList += $application
                 }
@@ -535,6 +531,198 @@ class KeyVault: SVTBase
 
 		return $controlResult;
 		
+	}
+
+	hidden [PSObject[]] CheckExcessKeyVersions([ControlResult] $controlResult)
+	{
+		$allExcessVersionKeys = @();
+
+		if($this.HasFetchKeysPermissions -eq $true)
+		{
+				try
+				{
+					$keysResult = @();
+					$keysResult += Get-AzKeyVaultKey -VaultName $this.ResourceContext.ResourceName -ErrorAction Stop | 
+									Where-Object { $_.Enabled -eq $true };
+
+					if($keysResult.Count -gt 0) 
+					{
+						$keysResult | ForEach-Object {
+							$count = 0
+							$currentKey = $_
+							Get-AzKeyVaultKey -VaultName $this.ResourceContext.ResourceName -Name $_.Name -IncludeVersions |
+							Where-Object { $_.Enabled -eq $true } | 
+							ForEach-Object {
+								if ($count -eq $this.ControlSettings.KeyVault.MaxRecommendedVersions) 
+								{
+									$allExcessVersionKeys += $currentKey
+									break
+								}
+								$count++
+							}
+						}
+					}
+				}
+				catch
+				{
+					if ($_.Exception.GetType().FullName -eq "Microsoft.Azure.KeyVault.Models.KeyVaultErrorException")
+					{
+						$controlResult.AddMessage([VerificationResult]::Manual,
+							[MessageData]::new("Access denied: Read access is required on Key Vault Keys to validate the number of keys."));
+					}
+					else
+					{
+						throw $_
+					}
+				}
+		}
+		else
+		{
+			$controlResult.CurrentSessionContext.Permissions.HasRequiredAccess = $false;
+			$controlResult.AddMessage([VerificationResult]::Manual,
+				[MessageData]::new("Number of keys can not be validated due to insufficient access permission on keys"));
+		}
+
+		return $allExcessVersionKeys;
+	}
+
+	hidden [PSObject[]] CheckExcessSecretVersions([ControlResult] $controlResult)
+	{
+		$allExcessVersionSecrets = @();
+
+		if($this.HasFetchSecretsPermissions -eq $true)
+		{
+				try
+				{
+					$secretsResult = @();
+					$secretsResult += Get-AzKeyVaultSecret -VaultName $this.ResourceContext.ResourceName -ErrorAction Stop | 
+									Where-Object { $_.Enabled -eq $true };
+
+					if($secretsResult.Count -gt 0) 
+					{
+						$secretsResult | ForEach-Object {
+							$count = 0
+							$currentSecret = $_
+							Get-AzKeyVaultSecret -VaultName $this.ResourceContext.ResourceName -Name $_.Name -IncludeVersions |
+							Where-Object { $_.Enabled -eq $true } | 
+							ForEach-Object {
+								if ($count -eq $this.ControlSettings.KeyVault.MaxRecommendedVersions) 
+								{
+									$allExcessVersionSecrets += $currentSecret
+									break
+								}
+								$count++
+							}
+						}
+					}
+				}
+				catch
+				{
+					if ($_.Exception.GetType().FullName -eq "Microsoft.Azure.KeyVault.Models.KeyVaultErrorException")
+					{
+						$controlResult.AddMessage([VerificationResult]::Manual,
+							[MessageData]::new("Access denied: Read access is required on Key Vault Secrets to validate the number of secrets."));
+					}
+					else
+					{
+						throw $_
+					}
+				}
+		}
+		else
+		{
+			$controlResult.CurrentSessionContext.Permissions.HasRequiredAccess = $false;
+			$controlResult.AddMessage([VerificationResult]::Manual,
+				[MessageData]::new("Number of secrets can not be validated due to insufficient access permission on secrets"));
+		}
+
+		return $allExcessVersionSecrets;
+	}
+
+	hidden [ControlResult] CheckExcessVersions([ControlResult] $controlResult)
+	{
+		if($this.HasFetchSecretsPermissions -eq $true -or $this.HasFetchKeysPermissions -eq $true)
+		{
+			$excessKeys = $this.CheckExcessKeyVersions($controlResult);
+			$excessSecrets = $this.CheckExcessSecretVersions($controlResult);
+			$excessVersionResources = @();
+	
+			if ($excessKeys.Count -ne 0 -or $excessSecrets.Count -ne 0) 
+			{
+				if ($excessKeys.Count -ne 0) 
+				{
+					$excessKeysDetails = $excessKeys | Select-Object Name, Version, Enabled, Created, Updated, RecoveryLevel;
+					$excessVersionResources += $excessKeysDetails
+					$controlResult.AddMessage([VerificationResult]::Failed,
+						[MessageData]::new("Following Keys have more than "+ $this.ControlSettings.KeyVault.MaxRecommendedVersions +" enabled versions."  , 
+								($excessKeysDetails )));	
+				}
+				if ($excessSecrets.Count -ne 0) 
+				{
+					$excessSecretsDetails = $excessSecrets | Select-Object Name, Version, Enabled, Created, Updated, RecoveryLevel;
+					$excessVersionResources += $excessSecretsDetails
+					$controlResult.AddMessage([VerificationResult]::Failed,
+						[MessageData]::new("Following Secrets have more than "+ $this.ControlSettings.KeyVault.MaxRecommendedVersions +" enabled versions."  , 
+								($excessSecretsDetails )));	
+				}	
+	
+				if($excessVersionResources.Count -gt 0)
+				{
+					$excessVersionResourcesDetails = $excessVersionResources | Select-Object -Property Name, Version, Enabled, Created, Updated, RecoveryLevel
+					$controlResult.SetStateData("Following keys and secrets have more than "+ $this.ControlSettings.KeyVault.MaxRecommendedVersions +" enabled versions.", 
+						($excessVersionResourcesDetails));
+				}
+	
+			}
+			else 
+			{
+				try 
+				{
+					$keysResult = @();
+					$keysResult += Get-AzKeyVaultKey -VaultName $this.ResourceContext.ResourceName -ErrorAction Stop | 
+									Where-Object { $_.Enabled -eq $true };
+					
+					$secretsResult = @();
+					$secretsResult += Get-AzKeyVaultSecret -VaultName $this.ResourceContext.ResourceName -ErrorAction Stop | 
+									Where-Object { $_.Enabled -eq $true };
+				
+					if ($keysResult.Count -eq 0 -and $secretsResult.Count -eq 0) 
+					{
+						$controlResult.AddMessage( [VerificationResult]::Passed,
+						[MessageData]::new("No Keys and Secrets are enabled for Key Vault - ["+ $this.ResourceContext.ResourceName +"]"));   
+					}
+					else 
+					{
+						if ($excessKeys.Count -eq 0 -and $excessSecrets.Count -eq 0)
+						{
+							$controlResult.AddMessage( [VerificationResult]::Passed,
+							[MessageData]::new("All Keys and Secrets have at the most "+ $this.ControlSettings.KeyVault.MaxRecommendedVersions +" versions enabled for Key Vault - ["+ $this.ResourceContext.ResourceName +"]"));   
+						}		
+					}	
+				}
+				catch 
+				{
+					if ($_.Exception.GetType().FullName -eq "Microsoft.Azure.KeyVault.Models.KeyVaultErrorException")
+					{
+						$controlResult.AddMessage([VerificationResult]::Manual,
+							[MessageData]::new("Access denied: Read access is required on Key Vault Secrets and Keys to validate the number of secrets and keys."));
+					}
+					else
+					{
+						throw $_
+					}
+					
+				}
+			}	
+		}
+		else
+		{
+			$controlResult.CurrentSessionContext.Permissions.HasRequiredAccess = $false;
+			$controlResult.AddMessage([VerificationResult]::Manual,
+				[MessageData]::new("Control can not be validated due to insufficient access permission on keys and secrets"));
+		}
+
+		return $controlResult
 	}
 }
 

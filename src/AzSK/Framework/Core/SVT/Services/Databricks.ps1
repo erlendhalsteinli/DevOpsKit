@@ -1,5 +1,5 @@
 Set-StrictMode -Version Latest 
-class Databricks: SVTBase
+class Databricks: AzSVTBase
 {       
     hidden [PSObject] $ResourceObject;
 	hidden [string] $ManagedResourceGroupName;
@@ -8,13 +8,6 @@ class Databricks: SVTBase
 	hidden [string] $PersonalAccessToken =""; 
 	hidden [bool] $HasAdminAccess = $false;
 	hidden [bool] $IsTokenRead = $false;
-
-    Databricks([string] $subscriptionId, [string] $resourceGroupName, [string] $resourceName): 
-                 Base($subscriptionId, $resourceGroupName, $resourceName) 
-    { 
-	 
-		$this.GetResourceObject();
-    }
 
     Databricks([string] $subscriptionId, [SVTResource] $svtResource): 
         Base($subscriptionId, $svtResource) 
@@ -28,9 +21,9 @@ class Databricks: SVTBase
         if (-not $this.ResourceObject)
 		{
 		
-            $this.ResourceObject = Get-AzureRmResource -Name $this.ResourceContext.ResourceName  `
-                                        -ResourceType $this.ResourceContext.ResourceType `
-                                        -ResourceGroupName $this.ResourceContext.ResourceGroupName
+            $this.ResourceObject = Get-AzResource -Name $this.ResourceContext.ResourceName  `
+			-ResourceType $this.ResourceContext.ResourceType `
+			-ResourceGroupName $this.ResourceContext.ResourceGroupName
 
             if(-not $this.ResourceObject)
             {
@@ -40,27 +33,32 @@ class Databricks: SVTBase
 			{
 			   $this.InitializeRequiredVariables();
 			}
-			
         }
-
         return $this.ResourceObject;
     }
 
 	
     hidden [ControlResult] CheckVnetPeering([ControlResult] $controlResult)
     {
-	    
-        $vnetPeerings = Get-AzureRmVirtualNetworkPeering -VirtualNetworkName "workers-vnet" -ResourceGroupName $this.ManagedResourceGroupName
-        if($null -ne $vnetPeerings  -and ($vnetPeerings|Measure-Object).count -gt 0)
-        {
-			$controlResult.AddMessage([VerificationResult]::Verify, [MessageData]::new("Verify below peering found on VNet", $vnetPeerings));
-			$controlResult.SetStateData("Peering found on VNet", $vnetPeerings);
+				$managedRG = Get-AzResourceGroup -Name $this.ManagedResourceGroupName -ErrorAction SilentlyContinue
+				if($managedRG){
+					$vnetPeerings = Get-AzVirtualNetworkPeering -VirtualNetworkName "workers-vnet" -ResourceGroupName $this.ManagedResourceGroupName
+					if($null -ne $vnetPeerings  -and ($vnetPeerings|Measure-Object).count -gt 0)
+					{
+							$controlResult.AddMessage([VerificationResult]::Verify, [MessageData]::new("Verify below peering found on VNet", $vnetPeerings));
+							$controlResult.SetStateData("Peering found on VNet", $vnetPeerings);
+	
+					}
+					else
+					{
+							$controlResult.AddMessage([VerificationResult]::Passed, [MessageData]::new("No VNet peering found on VNet", $vnetPeerings));
+					}
 
-        }
-        else
-        {
-			$controlResult.AddMessage([VerificationResult]::Passed, [MessageData]::new("No VNet peering found on VNet", $vnetPeerings));
-        }
+				}else{
+					$controlResult.CurrentSessionContext.Permissions.HasRequiredAccess = $false;
+					$controlResult.AddMessage([VerificationResult]::Manual, [MessageData]::new("Managed Resource Group $($this.ManagedResourceGroupName) was not found."));
+				}
+     
 
         return $controlResult;
 	}
@@ -233,7 +231,7 @@ class Databricks: SVTBase
 	   if($this.IsTokenAvailable() -and $this.IsUserAdmin())
 	   {    
 	        $controlResult.VerificationResult = [VerificationResult]::Verify;
-		    $accessList = [RoleAssignmentHelper]::GetAzSKRoleAssignmentByScope($this.GetResourceId(), $false, $true);
+		    $accessList = [RoleAssignmentHelper]::GetAzSKRoleAssignmentByScope($this.ResourceId, $false, $true);
 			$adminAccessList = $accessList | Where-Object { $_.RoleDefinitionName -eq 'Owner' -or $_.RoleDefinitionName -eq 'Contributor'}
 			# Add check for User Type
 			$potentialAdminUsers = @()
@@ -302,7 +300,7 @@ class Databricks: SVTBase
 				$controlResult.SetStateData("Following guest accounts have admin access on workspace:", $guestAdminUsers);
 			}
 			else{
-				$controlResult.AddMessage([VerificationResult]::Verify, [MessageData]::new("Manually verify that guest accounts should not have admin access on workspace."));
+				$controlResult.AddMessage([VerificationResult]::Passed, [MessageData]::new("No guest account with admin access on workspace found."));
 			}
 			
 	   }
@@ -386,16 +384,35 @@ class Databricks: SVTBase
 
 	hidden [string] ReadAccessToken()
 	{ 
-	     $scanSource = [RemoteReportHelper]::GetScanSource();
-         if($scanSource -eq [ScanSource]::SpotCheck)
+	   $scanSource = [RemoteReportHelper]::GetScanSource();
+     if($scanSource -eq [ScanSource]::SpotCheck)
 		 { 
-		   $input = ""
-		   $input = Read-Host "Enter PAT (personal access token) for '$($this.ResourceContext.ResourceName)' Databricks workspace"
-		   if($null -ne $input)
-		   {
-			 $input = $input.Trim()
-		   }  
-		   return $input;
+			$wsName = $this.ResourceContext.ResourceName
+			# If variable 'adbpatsforazsk' is set in session
+			# Then skip the prompt to input PAT, and read value of PAT from variable 
+			if ($adbpatsVar = Get-Variable 'adbpatsforazsk' -Scope Global -ErrorAction 'Ignore')
+			{
+				$this.PublishCustomMessage("Reading value of PAT(personal access token) for '$($wsName)' Databricks workspace from local variable 'adbpatsforazsk'.", [MessageType]::Warning);
+				if ($adbpatsVar.Value -eq '*')
+				{
+					return $null 
+				}
+				else
+				{
+					$pat = ($adbpatsVar.Value)[$wsName]
+					return $pat
+				}
+			}
+	    else{
+				$input = ""
+				$input = Read-Host "Enter PAT (personal access token) for '$($this.ResourceContext.ResourceName)' Databricks workspace"
+				if($null -ne $input)
+				{
+					$input = $input.Trim()
+				}  
+				return $input;
+			}
+			
 		 }
 		 else
 		 { 

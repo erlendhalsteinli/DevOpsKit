@@ -1,14 +1,8 @@
 Set-StrictMode -Version Latest 
-class ContainerRegistry: SVTBase
+class ContainerRegistry: AzSVTBase
 {       
     hidden [PSObject] $ResourceObject;
     hidden [PSObject] $AccessList;
-
-    ContainerRegistry([string] $subscriptionId, [string] $resourceGroupName, [string] $resourceName): 
-        Base($subscriptionId, $resourceGroupName, $resourceName) 
-    { 
-        $this.GetResourceObject();
-    }
 
     ContainerRegistry([string] $subscriptionId, [SVTResource] $svtResource): 
         Base($subscriptionId, $svtResource) 
@@ -20,7 +14,7 @@ class ContainerRegistry: SVTBase
     {
         if (-not $this.ResourceObject) 
 		{
-            $this.ResourceObject = Get-AzureRmContainerRegistry -Name $this.ResourceContext.ResourceName -ResourceGroupName $this.ResourceContext.ResourceGroupName
+            $this.ResourceObject = Get-AzContainerRegistry -Name $this.ResourceContext.ResourceName -ResourceGroupName $this.ResourceContext.ResourceGroupName
 
             if(-not $this.ResourceObject)
             {
@@ -28,7 +22,7 @@ class ContainerRegistry: SVTBase
             }
 
             # Get RBAC data to avoid multiple calls
-            $this.AccessList = [RoleAssignmentHelper]::GetAzSKRoleAssignmentByScope($this.GetResourceId(), $false, $true);
+            $this.AccessList = [RoleAssignmentHelper]::GetAzSKRoleAssignmentByScope($this.ResourceId, $false, $true);
         }
         return $this.ResourceObject;
     }
@@ -57,7 +51,7 @@ class ContainerRegistry: SVTBase
 
     hidden [ControlResult] CheckResourceAccess([ControlResult] $controlResult)
     {
-        $nonSPIdentities = $this.AccessList | Where-Object { $_.Scope -eq $this.GetResourceId() -and $_.ObjectType -ne 'ServicePrincipal' };
+        $nonSPIdentities = $this.AccessList | Where-Object { $_.Scope -eq $this.ResourceId -and $_.ObjectType -ne 'ServicePrincipal' };
         
         if(($nonSPIdentities | Measure-Object).Count -ne 0)
         {
@@ -80,7 +74,7 @@ class ContainerRegistry: SVTBase
     hidden [ControlResult] CheckContainerWebhooks([ControlResult] $controlResult)
     {
 
-        $webhooks = Get-AzureRmContainerRegistryWebhook -RegistryName $this.ResourceContext.ResourceName -ResourceGroupName $this.ResourceContext.ResourceGroupName -ErrorAction SilentlyContinue
+        $webhooks = Get-AzContainerRegistryWebhook -RegistryName $this.ResourceContext.ResourceName -ResourceGroupName $this.ResourceContext.ResourceGroupName -ErrorAction SilentlyContinue
 
         if(($webhooks | Measure-Object).Count -gt 0)
         {

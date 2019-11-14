@@ -1,31 +1,41 @@
 
 Set-StrictMode -Version Latest
-class AzSKCfg: SVTBase
+class AzSKCfg: AzSVTBase
 {
-
+    $RGPerms = $false
 	AzSKCfg([string] $subscriptionId,[SVTResource] $svtResource):
         Base($subscriptionId,  $svtResource )
     {
-       
+		
     }
 	hidden [ControlResult] CheckifCAPresent([ControlResult] $controlResult)
 	{
-		$AutomationAccount=[Constants]::AutomationAccount
 		$AzSKRGName=[ConfigurationManager]::GetAzSKConfigData().AzSKRGName
+        $this.RGPerms = $this.ControlStateExt.HasControlStateReadAccessPermissions()
+		if ($this.RGPerms){
 
-		$caAutomationAccount = Get-AzureRmAutomationAccount -Name  $AutomationAccount -ResourceGroupName $AzSKRGName -ErrorAction SilentlyContinue
-		if($caAutomationAccount)
-		{
+			$AutomationAccount=[Constants]::AutomationAccount
 			
-			$controlResult.AddMessage([VerificationResult]::Passed,
-                                    [MessageData]::new("CA account '$($AutomationAccount)' is present in the subscription."));
-        
+
+			$caAutomationAccount = Get-AzAutomationAccount -Name  $AutomationAccount -ResourceGroupName $AzSKRGName -ErrorAction SilentlyContinue
+			if($caAutomationAccount)
+			{
+				
+				$controlResult.AddMessage([VerificationResult]::Passed,
+										[MessageData]::new("CA account '$($AutomationAccount)' is present in the subscription."));
+			
+			}
+			else
+			{
+					$controlResult.AddMessage([VerificationResult]::Failed,
+										[MessageData]::new("CA account '$($AutomationAccount)' is not present in the subscription."));
+		
+			}
 		}
-		else
-		{
-				$controlResult.AddMessage([VerificationResult]::Failed,
-                                    [MessageData]::new("CA account '$($AutomationAccount)' is not present in the subscription."));
-    
+		else{
+			$controlResult.AddMessage([VerificationResult]::Manual,
+										[MessageData]::new("You do not have required permissions to evaluate this control. You will need reader access on ["+ $AzSKRGName +"]" ));
+
 		}
 
 	return $controlResult
@@ -33,14 +43,16 @@ class AzSKCfg: SVTBase
 
 	hidden [ControlResult] CheckHealthofCA([ControlResult] $controlResult)
 	{
+        $this.RGPerms = $this.ControlStateExt.HasControlStateReadAccessPermissions()
+		$AzSKRGName=[ConfigurationManager]::GetAzSKConfigData().AzSKRGName
+	if ($this.RGPerms){
 		$HasGraphAPIAccess = [RoleAssignmentHelper]::HasGraphAccess();
 		
 		$AutomationAccount=[Constants]::AutomationAccount
-		$AzSKRGName=[ConfigurationManager]::GetAzSKConfigData().AzSKRGName
-		$AzSKRG = Get-AzureRmResourceGroup -Name $AzSKRGName -ErrorAction SilentlyContinue	
+		$AzSKRG = Get-AzResourceGroup -Name $AzSKRGName -ErrorAction SilentlyContinue	
 		$stepCount = 0;
 
-		$caAutomationAccount = Get-AzureRmAutomationAccount -Name  $AutomationAccount -ResourceGroupName $AzSKRGName -ErrorAction SilentlyContinue
+		$caAutomationAccount = Get-AzAutomationAccount -Name  $AutomationAccount -ResourceGroupName $AzSKRGName -ErrorAction SilentlyContinue
 		if($caAutomationAccount)
 		{
 			#region: runbook version check
@@ -110,7 +122,7 @@ class AzSKCfg: SVTBase
 				if($runAsConnection)
 				{			
 					$CAAADApplicationID = $runAsConnection.FieldDefinitionValues.ApplicationId
-					$spObject = Get-AzureRmADServicePrincipal -ServicePrincipalName $CAAADApplicationID -ErrorAction SilentlyContinue
+					$spObject = Get-AzADServicePrincipal -ServicePrincipalName $CAAADApplicationID -ErrorAction SilentlyContinue
 					$spName=""
 					if($spObject){$spName = $spObject.DisplayName}
 					$haveSubscriptionRBACAccess = $true;
@@ -145,14 +157,14 @@ class AzSKCfg: SVTBase
 				$stepCount++
 				$certificateAssetName = "AzureRunAsCertificate"
 		
-				$runAsCertificate = Get-AzureRmAutomationCertificate -AutomationAccountName  $AutomationAccount `
+				$runAsCertificate = Get-AzAutomationCertificate -AutomationAccountName  $AutomationAccount `
 				-Name $certificateAssetName `
 				-ResourceGroupName $AzSKRGName -ErrorAction SilentlyContinue
 		
 				if($runAsCertificate)
 				{
 					$runAsConnection = $this.GetRunAsConnection();
-					$ADapp = Get-AzureRmADApplication -ApplicationId $runAsConnection.FieldDefinitionValues.ApplicationId -ErrorAction SilentlyContinue
+					$ADapp = Get-AzADApplication -ApplicationId $runAsConnection.FieldDefinitionValues.ApplicationId -ErrorAction SilentlyContinue
 					if(($runAsCertificate.ExpiryTime.UtcDateTime - $(get-date).ToUniversalTime()).TotalDays -le 7)
 					{
 							$controlResult.AddMessage([VerificationResult]::Failed,
@@ -190,6 +202,11 @@ class AzSKCfg: SVTBase
 			$controlResult.AddMessage([VerificationResult]::Failed,
                             [MessageData]::new("CA account '$($AutomationAccount)' is not present in the subscription."));
 		}
+}
+    else{
+    			$controlResult.AddMessage([VerificationResult]::Manual,
+										[MessageData]::new("You do not have required permissions to evaluate this control. You will need reader access on ["+ $AzSKRGName +"]" ));
+    }
 		return $controlResult
 	}
 
@@ -221,12 +238,12 @@ class AzSKCfg: SVTBase
 		$AutomationAccount=[Constants]::AutomationAccount
 		$AzSKRGName=[ConfigurationManager]::GetAzSKConfigData().AzSKRGName
 		$ScheduleName=[Constants]::ScheduleName
-		$runbookSchedulesList = Get-AzureRmAutomationScheduledRunbook -ResourceGroupName $AzSKRGName `
+		$runbookSchedulesList = Get-AzAutomationScheduledRunbook -ResourceGroupName $AzSKRGName `
 		-AutomationAccountName  $AutomationAccount `
 		-RunbookName $runbookName -ErrorAction Stop
 		if($runbookSchedulesList)
 		{
-			$schedules = Get-AzureRmAutomationSchedule -ResourceGroupName $AzSKRGName `
+			$schedules = Get-AzAutomationSchedule -ResourceGroupName $AzSKRGName `
 			-AutomationAccountName  $AutomationAccount -Name $ScheduleName  | Where-Object{ $_.Name -eq $ScheduleName}
 			$activeSchedule = $schedules | Where-Object{$_.IsEnabled -and `
 			$_.Frequency -ne [Microsoft.Azure.Commands.Automation.Model.ScheduleFrequency]::Onetime -and `
@@ -246,7 +263,7 @@ class AzSKCfg: SVTBase
 		$AutomationAccount=[Constants]::AutomationAccount
 		$AzSKRGName=[ConfigurationManager]::GetAzSKConfigData().AzSKRGName
 		$connectionAssetName=[Constants]::connectionAssetName
-		$connection = Get-AzureRmAutomationConnection -AutomationAccountName  $AutomationAccount `
+		$connection = Get-AzAutomationConnection -AutomationAccountName  $AutomationAccount `
 			-Name  $connectionAssetName -ResourceGroupName `
 			$AzSKRGName -ErrorAction SilentlyContinue
 		if((Get-Member -InputObject $connection -Name FieldDefinitionValues -MemberType Properties) -and $connection.FieldDefinitionValues.ContainsKey("ApplicationId"))
@@ -264,11 +281,11 @@ class AzSKCfg: SVTBase
 	{
 		
 		$AzSKRGName=[ConfigurationManager]::GetAzSKConfigData().AzSKRGName
-		$spPermissions = Get-AzureRmRoleAssignment -serviceprincipalname $applicationId 
+		$spPermissions = Get-AzRoleAssignment -serviceprincipalname $applicationId 
 		#Check subscription access
 		if(($spPermissions|Measure-Object).count -gt 0)
 		{
-			$haveRGAccess = ($spPermissions | Where-Object {$_.scope -eq (Get-AzureRmResourceGroup -Name $AzSKRGName).ResourceId -and $_.RoleDefinitionName -eq "Contributor"}|measure-object).count -gt 0
+			$haveRGAccess = ($spPermissions | Where-Object {$_.scope -eq (Get-AzResourceGroup -Name $AzSKRGName).ResourceId -and $_.RoleDefinitionName -eq "Contributor"}|measure-object).count -gt 0
 			return $haveRGAccess	
 		}
 		else
@@ -280,8 +297,8 @@ class AzSKCfg: SVTBase
 	hidden [bool] CheckServicePrincipalSubscriptionAccess($applicationId)
 	{
 		#fetch SP permissions
-		$spPermissions = Get-AzureRmRoleAssignment -serviceprincipalname $applicationId 
-		$currentContext = [Helpers]::GetCurrentRMContext();
+		$spPermissions = Get-AzRoleAssignment -serviceprincipalname $applicationId 
+		$currentContext = [ContextHelper]::GetCurrentRMContext();
 		#Check subscription access
 		if(($spPermissions|measure-object).count -gt 0)
 		{

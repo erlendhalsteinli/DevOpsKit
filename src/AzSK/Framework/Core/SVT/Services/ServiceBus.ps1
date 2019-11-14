@@ -1,17 +1,12 @@
 ﻿#using namespace Microsoft.Azure.Commands.ServiceBus.Models
 Set-StrictMode -Version Latest 
-class ServiceBus: SVTBase
+class ServiceBus: AzSVTBase
 {       
 	hidden [PSObject[]] $NamespacePolicies = @() ;
 	hidden [PSObject[]] $Queues = @() ;
 	hidden [PSObject[]] $Topics = @() ;
 	hidden [HashTable] $QueueAccessPolicies = @{};
 	hidden [Hashtable] $TopicAccessPolicies = @{};
-
-    ServiceBus([string] $subscriptionId, [string] $resourceGroupName, [string] $resourceName): 
-        Base($subscriptionId, $resourceGroupName, $resourceName) 
-    { 
-    }
 
 	ServiceBus([string] $subscriptionId, [SVTResource] $svtResource): 
         Base($subscriptionId, $svtResource) 
@@ -25,7 +20,7 @@ class ServiceBus: SVTBase
         if (-not $this.NamespacePolicies) {
 			try
 			{
-				$this.NamespacePolicies = (Get-AzureRmServiceBusAuthorizationRule -ResourceGroup $this.ResourceContext.ResourceGroupName `
+				$this.NamespacePolicies = (Get-AzServiceBusAuthorizationRule -ResourceGroup $this.ResourceContext.ResourceGroupName `
 							-NamespaceName $this.ResourceContext.ResourceName | Select-Object Id, Name, Rights)
 			}
 			catch
@@ -39,7 +34,7 @@ class ServiceBus: SVTBase
 		if (-not $this.Queues) {
 			try
 			{
-				$this.Queues = Get-AzureRmServiceBusQueue -ResourceGroup $this.ResourceContext.ResourceGroupName -NamespaceName $this.ResourceContext.ResourceName
+				$this.Queues = Get-AzServiceBusQueue -ResourceGroup $this.ResourceContext.ResourceGroupName -NamespaceName $this.ResourceContext.ResourceName
 			}
 			catch
 			{
@@ -52,7 +47,7 @@ class ServiceBus: SVTBase
 		if (-not $this.Topics) {
 			try
 			{
-				$this.Topics = Get-AzureRmServiceBusTopic -ResourceGroup $this.ResourceContext.ResourceGroupName -NamespaceName $this.ResourceContext.ResourceName
+				$this.Topics = Get-AzServiceBusTopic -ResourceGroup $this.ResourceContext.ResourceGroupName -NamespaceName $this.ResourceContext.ResourceName
 			}
 			catch
 			{
@@ -71,7 +66,7 @@ class ServiceBus: SVTBase
 			{
 				try
 				{
-					$queuePolicies = Get-AzureRmServiceBusAuthorizationRule -ResourceGroup $this.ResourceContext.ResourceGroupName `
+					$queuePolicies = Get-AzServiceBusAuthorizationRule -ResourceGroup $this.ResourceContext.ResourceGroupName `
 										-NamespaceName $this.ResourceContext.ResourceName -Queue $queue.Name
 
 					$this.QueueAccessPolicies.Add($queue, ($queuePolicies | Select-Object Id, Name, Rights))	
@@ -93,7 +88,7 @@ class ServiceBus: SVTBase
 			{
 				try
 				{
-					$topicPolicies = Get-AzureRmServiceBusAuthorizationRule -ResourceGroup $this.ResourceContext.ResourceGroupName `
+					$topicPolicies = Get-AzServiceBusAuthorizationRule -ResourceGroup $this.ResourceContext.ResourceGroupName `
 										-NamespaceName $this.ResourceContext.ResourceName -Topic $topic.Name
 
 					$this.TopicAccessPolicies.Add($topic, ($topicPolicies| Select-Object Id, Name, Rights))	
@@ -114,15 +109,13 @@ class ServiceBus: SVTBase
 		$isControlFailed = $false
 		#region "NameSpace"
 
-		if(($this.NamespacePolicies | Measure-Object).count -gt 1)
-		{
-			$controlResult.AddMessage([VerificationResult]::Failed, [MessageData]::new("Authorization rules for namespace - ["+ $this.ResourceContext.ResourceName +"]. All the authorization rules except 'RootManageSharedAccessKey' must be removed from namespace level. Also validate that 'RootManageSharedAccessKey' authorization rule must not be used at Queue/Topic level to send and receive messages.", 
-				$this.NamespacePolicies));   	
+		if((($this.NamespacePolicies | Measure-Object).count -eq 1) -and (($this.NamespacePolicies.Id.substring($this.NamespacePolicies.Id.Length-25, 25) -eq "RootManageSharedAccessKey"))) {
+			$controlResult.AddMessage([VerificationResult]::Passed, [MessageData]::new("Only default authorization rule present for namespace - ["+ $this.ResourceContext.ResourceName +"].", 
+			$this.NamespacePolicies)); 
 		}
-		else
-		{
-			$controlResult.AddMessage([VerificationResult]::Verify, [MessageData]::new("Authorization rules for namespace - ["+ $this.ResourceContext.ResourceName +"]. Validate that these rules must not be used at Queue/Topic level to send and receive messages.", 
-				$this.NamespacePolicies));   	
+		else {
+			$controlResult.AddMessage([VerificationResult]::Failed, [MessageData]::new("Authorization rules for namespace - ["+ $this.ResourceContext.ResourceName +"]. All the authorization rules except 'RootManageSharedAccessKey' must be removed from namespace level. Also validate that 'RootManageSharedAccessKey' authorization rule must not be used at Queue/Topic level to send and receive messages.", 
+			$this.NamespacePolicies)); 
 		}
 
 		$controlResult.SetStateData("Authorization rules for namespace entities", $this.NamespacePolicies);

@@ -15,8 +15,6 @@ Param(
 	[switch] $UpdateToLatestVersion
 )
 
-[string] $OldModuleName = "#OldModuleName#"
-[string] $OldAzSDKConfigURL = ""
 [string] $ModuleName = "#ModuleName#"
 [string] $OrgName = "#OrgName#"
 [string] $SupportEmail = "azsksupext@microsoft.com"
@@ -78,22 +76,6 @@ function BootstrapRepo {
     } 
 }
 
-function CheckIfMultipleModulesLoaded
-{
-   #check if old module is loaded in same session
-	$oldModule = Get-Module|Where-Object {$_.Name -like "$OldModuleName*"} | Select-Object -First 1
-	if($oldModule)
-	{	 
-		$warningMsg = "Found older module ($OldModuleName) loaded in the PS session.`r`n"+
-			"Stopping installation."
-        $recommendationMsg = "Recommendation: Please start a fresh PS session and try again to avoid getting into this situation."
-		Write-Host $warningMsg -ForegroundColor Red
-		Write-Host $recommendationMsg -ForegroundColor Yellow
-        
-		#stop execution
-        break
-	}
-}
 function BootstrapSetup ($moduleName, $versionConfigUrl)
 {
     Write-Host "Checking if a previous version of $moduleName is present on your machine..." -ForegroundColor Yellow
@@ -216,7 +198,7 @@ function BootstrapOrgPolicy{
         }
         
 		Import-Module $ModuleName -RequiredVersion $Version -Force     
-	    Set-AzSKPolicySettings -OnlinePolicyStoreUrl $OnlinePolicyStoreUrl -AzureEnvironment $AzureEnvironment -ErrorAction Stop
+	    Set-AzSKPolicySettings -OnlinePolicyStoreUrl $OnlinePolicyStoreUrl -AzureEnvironment $AzureEnvironment -AutoUpdateCommand $AutoUpdateCommand -ErrorAction Stop
 	    Write-Host "Completed $OrgName policy configuration." -ForegroundColor Green
 	}
     catch
@@ -233,49 +215,9 @@ function BootstrapOrgPolicy{
 
 }
 
-function RemoveOlderModule 
-{
-    Write-Host "Checking if a previous version of $OldModuleName is present on your machine..." -ForegroundColor Yellow
-	$setupModules = @()
-    $setupModules += Get-Module -Name $OldModuleName -ListAvailable
-
-    #If module count is greater than 0 then filter module with current active directory
-	if(($setupModules | Measure-Object).Count -gt 0  )
-	{
-		Write-Host "Found older versions of $OldModuleName. Uninstalling it..." -ForegroundColor Yellow
-		try 
-		{
-			$loadedModule = Get-Module -Name $OldModuleName
-			if($loadedModule)
-			{
-				Write-Host "$OldModuleName version $($loadedModule.Version) is currently loaded in this PS session.`nPlease close this session (and any other active PS sessions) and rerun the setup command in a fresh session."  -ForegroundColor Red
-				break
-			}
-			Uninstall-Module -Name $OldModuleName -AllVersions -Force -ErrorAction Stop			
-		}
-		catch 
-		{
-			Write-Host "Failed to remove previous versions of $OldModuleName. Error:" $_ -ForegroundColor Red
-			Write-Host "Tip: Close all the instances of PowerShell (includes ISE, Visual Studio (PMC), VS Code (Terminal), etc)."
-			$setupModules | ForEach-Object{
-				$setupModule = $_
-				$moduleLocation = $setupModule.ModuleBase.Substring(0, $setupModule.ModuleBase.LastIndexOf($setupModule.Name))
-				Write-Host "Remove the folder '$setupModule' at '$moduleLocation' manually."
-			}
-			break
-		}
-		Write-Host "Completed uninstallation." -ForegroundColor Green
-	}
-	elseif($setupModules -eq $null)
-	{
-        Write-Host "No previous version found." -ForegroundColor Green
-	}
-}
 
 function BootstrapInstaller {
     #BootstrapRepo
-    #BootstrapSetup -moduleName $OldModuleName -versionConfigUrl $OldAzSDKConfigURL -uninstallAll $true
-	RemoveOlderModule
     BootstrapSetup -moduleName $ModuleName -versionConfigUrl $AzSKConfigURL
     BootstrapOrgPolicy
 
@@ -299,7 +241,6 @@ function CheckPrerequsites {
     Write-Host "Checking Prerequisites... " -ForegroundColor Yellow
     CheckPSVersion
     CheckNugetPackageProvider
-    CheckIfMultipleModulesLoaded
 }
 
 function Init {

@@ -1,6 +1,6 @@
 Set-StrictMode -Version Latest 
 
-class SecurityRecommendationsReport: CommandBase
+class SecurityRecommendationsReport: AzCommandBase
 {    
 	hidden [PSObject] $AzSKRG = $null
 	hidden [String] $AzSKRGName = ""
@@ -11,7 +11,7 @@ class SecurityRecommendationsReport: CommandBase
 
     { 
 		$this.AzSKRGName = [ConfigurationManager]::GetAzSKConfigData().AzSKRGName;
-		$this.AzSKRG = Get-AzureRmResourceGroup -Name $this.AzSKRGName -ErrorAction SilentlyContinue
+		$this.AzSKRG = Get-AzResourceGroup -Name $this.AzSKRGName -ErrorAction SilentlyContinue
 	}
 
 	hidden [System.Object]get_hash([SecurityReportInput] $Input){
@@ -84,7 +84,7 @@ class SecurityRecommendationsReport: CommandBase
 			[SecurityReportInput] $userInput = [SecurityReportInput]::new();
 			if(-not [string]::IsNullOrWhiteSpace($ResourceGroupName))
 			{
-				$resources = Get-AzureRmResource -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
+				$resources = Get-AzResource -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
 				if(($resources | Measure-Object).Count -gt 0)
 				{
 					[SVTMapping]::GetSupportedResourceMap();
@@ -105,7 +105,7 @@ class SecurityRecommendationsReport: CommandBase
 			{
 				$userInput.Categories = $Categories
 			}
-			$content = [Helpers]::ConvertToJsonCustomCompressed($userInput);
+			$content = [JsonHelper]::ConvertToJsonCustomCompressed($userInput);
 			#write-host $content;
 			$headers = @{};
 			$RecommendationURI = [constants]::RecommendationURI;

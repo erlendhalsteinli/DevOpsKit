@@ -4,7 +4,8 @@ class ComplianceReportHelper: ComplianceBase
 {
     hidden [string] $ScanSource
 	hidden [System.Version] $ScannerVersion
-	hidden [string] $ScanKind 
+	hidden [string] $ScanKind
+	static [ComplianceReportHelper] $Instance
 	
     ComplianceReportHelper([SubscriptionContext] $subscriptionContext,[System.Version] $ScannerVersion):
     Base([SubscriptionContext] $subscriptionContext) 
@@ -12,7 +13,17 @@ class ComplianceReportHelper: ComplianceBase
 		$this.ScanSource = [RemoteReportHelper]::GetScanSource();
 		$this.ScannerVersion = $ScannerVersion
 		$this.ScanKind = [ServiceScanKind]::Partial;
-	} 
+	}
+	
+	#Get cached instance for compliance. This is to avoid repeatative calls for base constructor which fetch details of AzSK resources on every resource
+	static [ComplianceReportHelper] GetInstance([SubscriptionContext] $subscriptionContext,[System.Version] $ScannerVersion)
+    {
+        if ( $null -eq  [ComplianceReportHelper]::Instance)
+        {
+			[ComplianceReportHelper]::Instance = [ComplianceReportHelper]::new($subscriptionContext, $ScannerVersion)
+		}
+        return [ComplianceReportHelper]::Instance
+    }
 	
 	hidden [ComplianceStateTableEntity[]] GetSubscriptionComplianceReport()
 	{
@@ -111,7 +122,7 @@ class ComplianceReportHelper: ComplianceBase
 			$CanonicalizedResource = "/$AccountName/$TableName()"
 			$SigningParts=@($Verb,$ContentMD5,$ContentType,$Date,$CanonicalizedResource)
 			$StringToSign = [String]::Join("`n",$SigningParts)
-			$sharedKey = [Helpers]::CreateStorageAccountSharedKey($StringToSign,$AccountName,$AccessKey)
+			$sharedKey = [StorageHelper]::CreateStorageAccountSharedKey($StringToSign,$AccountName,$AccessKey)
 
 			$xmsdate = $Date
 			$headers = @{"Accept"="application/json";"x-ms-date"=$xmsdate;"Authorization"="SharedKey $sharedKey";"x-ms-version"="2018-03-28"}
@@ -137,6 +148,10 @@ class ComplianceReportHelper: ComplianceBase
 				if("IsControlInGrace" -notin $props)
 				{
 					$props += "IsControlInGrace"
+				}
+                if("IsPreviewBaselineControl" -notin $props)
+				{
+					$props += "IsPreviewBaselineControl"
 				}
 			
 				if(($props | Measure-Object).Count -gt 0)
@@ -195,18 +210,33 @@ class ComplianceReportHelper: ComplianceBase
 				$scanResult.LastResultTransitionOn = [System.DateTime]::UtcNow.ToString("s");
 				$scanResult.PreviousVerificationResult = $scanResult.VerificationResult;
 			}
-
-			if($scanResult.FirstScannedOn -eq [Constants]::AzSKDefaultDateTime)
+			
+			if($scanResult.FirstScannedOn -eq [Constants]::AzSKDefaultDateTime -or ([datetime] $scanResult.FirstScannedOn) -gt ([datetime] $currentSVTResult.FirstScannedOn) )
 			{
-				$scanResult.FirstScannedOn = [System.DateTime]::UtcNow.ToString("s");
+				if($currentSVTResult.FirstScannedOn -eq [Constants]::AzSKDefaultDateTime)
+				{
+					$scanResult.FirstScannedOn = [System.DateTime]::UtcNow.ToString("s");
+				}
+				else 
+				{
+					$scanResult.FirstScannedOn = (get-date $currentSVTResult.FirstScannedOn).ToString("s");
+				}
 			}
 
 			if($scanResult.FirstFailedOn -eq [Constants]::AzSKDefaultDateTime -and $currentSVTResult.ActualVerificationResult -ne [VerificationResult]::Passed)
 			{
-				$scanResult.FirstFailedOn = [System.DateTime]::UtcNow.ToString("s");
+				if($currentSVTResult.FirstFailedOn -eq [Constants]::AzSKDefaultDateTime)
+				{
+					$scanResult.FirstFailedOn = [System.DateTime]::UtcNow.ToString("s");
+				}
+				else 
+				{
+					$scanResult.FirstFailedOn = $currentSVTResult.FirstFailedOn.ToString("s");
+				}
 			}
+			
 			$scanResult.IsControlInGrace=$currentSVTResult.IsControlInGrace
-			$scanResult.ScannedBy = [Helpers]::GetCurrentRMContext().Account
+			$scanResult.ScannedBy = [ContextHelper]::GetCurrentRMContext().Account
 			$scanResult.ScanSource = $this.ScanSource
 			$scanResult.ScannerVersion = $this.ScannerVersion
 			#TODO check in the case sub control					
@@ -251,6 +281,7 @@ class ComplianceReportHelper: ComplianceBase
 			$scanResult.HasAttestationReadPermissions = $currentSVTResult.CurrentSessionContext.Permissions.HasAttestationReadPermissions
 			$scanResult.UserComments = $currentSVTResult.UserComments
 			$scanResult.IsBaselineControl = $controlItem.IsBaselineControl
+			$scanResult.IsPreviewBaselineControl = $controlItem.IsPreviewBaselineControl
 			
 			if($controlItem.Tags.Contains("OwnerAccess") -or $controlItem.Tags.Contains("GraphRead"))
 			{
@@ -370,5 +401,103 @@ class ComplianceReportHelper: ComplianceBase
 		else {
 			return "";
 		}	
+	}
+
+	hidden [string] FetchComplianceStateFromDb()
+	{
+		if($null -eq $this.azskStorageInstance)
+        {
+            throw "Unable to find storage account in the subscription. Please scan the complete subscription with co-administrator/owner access atleast once before running this command."
+        }		
+		$result =  [RemoteAPIHelper]::GetComplianceSnapshot($this.SubscriptionContext.SubscriptionId)
+		$Complianceinfo = ConvertFrom-Json -InputObject $result
+		if(($Complianceinfo | Measure-Object).Count -gt 0)
+		{
+			$ComplianceState = New-Object -TypeName "System.Collections.Generic.List[SVTEventContext]";
+			$subContext= $this.SubscriptionContext;
+			foreach ($item in $Complianceinfo)
+			{
+				$CResult= New-Object -TypeName ControlResult
+				$StateData = New-Object -TypeName StateData
+				$SVTEvent= New-Object -TypeName SVTEventContext
+				$controlDetails = New-Object -TypeName ControlItem
+				$resourceDetails=[ResourceContext]::new()
+				$CResult.ChildResourceName = "";
+				$CResult.VerificationResult = $item.VerificationResult
+				$CResult.ActualVerificationResult = $item.ActualVerificationResult;
+				if(-not [string]::IsNullOrEmpty($item.FirstFailedOn))
+				{
+					$CResult.FirstFailedOn = get-date $item.FirstFailedOn
+				}
+				if(-not [string]::IsNullOrEmpty($item.FirstScannedOn))
+				{
+					$CResult.FirstScannedOn = get-date $item.FirstScannedOn
+				}
+				$CResult.MaximumAllowedGraceDays=$item.MaximumAllowedGraceDays;
+				$scanFromDays = [System.DateTime]::UtcNow.Subtract($CResult.FirstScannedOn)
+				# Setting isControlInGrace Flag		
+				if($scanFromDays.Days -le $CResult.MaximumAllowedGraceDays)
+				{
+					$CResult.IsControlInGrace = $true
+				}
+				else
+				{
+					$CResult.IsControlInGrace = $false
+				}
+				$StateData.AttestedBy = $item.attestedBy;
+				$StateData.AttestedDate = $item.attestedDate
+				$StateData.Justification = $item.Justification
+				$CResult.StateManagement.AttestedStateData=$StateData
+				$controlDetails.ControlId=$item.ControlId
+				$CResult.CurrentSessionContext.IsLatestPSModule = $true
+				$CResult.CurrentSessionContext.Permissions.HasRequiredAccess = $true
+				$CResult.CurrentSessionContext.Permissions.HasAttestationWritePermissions = $this.azskStorageInstance.HaveWritePermissions
+				$CResult.CurrentSessionContext.Permissions.HasAttestationReadPermissions = $this.azskStorageInstance.HaveWritePermissions 
+				$controlDetails.Id=$item.ControlIntId
+				$controlDetails.ControlSeverity=$item.ControlSeverity
+				$SVTEvent.ControlResults = $CResult;
+				if($item.IsBaselineControl)
+				{
+					$controlDetails.IsBaselineControl=$true	
+				}
+				else 
+				{
+					$controlDetails.IsBaselineControl=$false				
+				}
+				if($item.IsPreviewBaselineControl)
+				{
+					$controlDetails.IsPreviewBaselineControl=$true
+				}
+				else 
+				{
+					$controlDetails.IsPreviewBaselineControl=$false				
+				}
+				
+				$SVTEvent.ControlItem=$controlDetails;
+				$resourceDetails.ResourceName=$item.resourceName;
+				$SVTEvent.FeatureName=$item.FeatureName;
+				$resourceDetails.ResourceGroupName=$item.ResourceGroupName;			
+				$SVTEvent.SubscriptionContext = $subContext
+				$resourceDetails.ResourceId= $SVTEvent.SubscriptionContext.Scope;
+				if(-not [string]::IsNullOrEmpty($item.ResourceId))
+				{
+					$resourceDetails.ResourceId = $item.ResourceId;
+				}
+				$SVTEvent.ResourceContext=$resourceDetails
+				$ComplianceState.Add($SVTEvent);
+
+
+			}
+				
+			$this.StoreComplianceDataInUserSubscription($ComplianceState);
+			return "Compliance data has been successfully stored in storage "
+		}
+		else 
+		{
+					
+					return "No records found for this subscription. Make sure to scan the complete subscription with co-administrator/owner access atleast once before running this command."
+				
+		}	
+		
 	}
 }

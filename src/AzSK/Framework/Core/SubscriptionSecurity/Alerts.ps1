@@ -2,7 +2,7 @@ using namespace System.Management.Automation
 Set-StrictMode -Version Latest 
 
 # Class to implement Subscription alert controls 
-class Alerts: CommandBase
+class Alerts: AzCommandBase
 {    
 	hidden [PSObject[]] $Policy = $null;
 	
@@ -12,7 +12,6 @@ class Alerts: CommandBase
 	hidden [string] $ResourceGroup ;
 	hidden [string] $ResourceGroupLocation;
 	hidden [PSObject] $AlertPolicyObj = $null
-	hidden [string] $V1AlertRGName;
 	hidden [string] $RunbookName=[Constants]::AlertRunbookName
 	hidden [string] $Alert_ResourceCreation_Runbook=[Constants]::Alert_ResourceCreation_Runbook
 	
@@ -22,7 +21,6 @@ class Alerts: CommandBase
 	Alerts([string] $subscriptionId, [InvocationInfo] $invocationContext, [string] $tags): 
         Base($subscriptionId, $invocationContext)
     {
-		$this.V1AlertRGName = [OldConstants]::V1AlertRGName
 		$this.ResourceGroup = [ConfigurationManager]::GetAzSKConfigData().AzSKRGName
 		$this.AlertPolicyObj =  $this.LoadServerConfigFile("Subscription.InsARMAlerts.json");
 		$this.FilterTags = $this.ConvertToStringArray($tags);
@@ -80,7 +78,7 @@ class Alerts: CommandBase
 
 		# Check for existence of resource group
 
-		$existingRG = Get-AzureRmResourceGroup -Name $rgName -ErrorAction SilentlyContinue
+		$existingRG = Get-AzResourceGroup -Name $rgName -ErrorAction SilentlyContinue
 		if($existingRG)
 		{
 			$startMessage = [MessageData]::new("Found alerts resource group: $rgName");
@@ -144,7 +142,7 @@ class Alerts: CommandBase
 							# Remove alert
 							try
 							{
-								Remove-AzureRmResource -ResourceType "Microsoft.Insights/activityLogAlerts" -ResourceGroupName  $rgName -Name $alertName -Force
+								Remove-AzResource -ResourceType "Microsoft.Insights/activityLogAlerts" -ResourceGroupName  $rgName -Name $alertName -Force
 								#Remove-AzureRmAlertRule -ResourceGroup $this.ResourceGroup -Name $alertName -WarningAction SilentlyContinue      
 							}
 							catch
@@ -160,13 +158,13 @@ class Alerts: CommandBase
 						if($errorCount -eq 0)
 						{
 							#setting the tag at AzSKRG
-							[Helpers]::SetResourceGroupTags($rgName,@{[Constants]::AzSKAlertsVersionTagName=$this.AlertPolicyObj.Version}, $true)
+							[ResourceGroupHelper]::SetResourceGroupTags($rgName,@{[Constants]::AzSKAlertsVersionTagName=$this.AlertPolicyObj.Version}, $true)
 
 							$resultMessages += [MessageData]::new("All alerts have been removed from the subscription successfully`r`n" + [Constants]::SingleDashLine, [MessageType]::Update);
 							if($DeleteActionGroup)
 							{
-								Remove-AzureRmResource -ResourceType "Microsoft.Insights/actiongroups" -ResourceGroupName $rgName -Name $([Constants]::AlertActionGroupName) -Force
-								Remove-AzureRmResource -ResourceType "Microsoft.Insights/actiongroups" -ResourceGroupName $rgName -Name $([Constants]::CriticalAlertActionGroupName) -ErrorAction SilentlyContinue -Force 
+								Remove-AzResource -ResourceType "Microsoft.Insights/actiongroups" -ResourceGroupName $rgName -Name $([Constants]::AlertActionGroupName) -Force
+								Remove-AzResource -ResourceType "Microsoft.Insights/actiongroups" -ResourceGroupName $rgName -Name $([Constants]::CriticalAlertActionGroupName) -ErrorAction SilentlyContinue -Force 
 								$resultMessages += [MessageData]::new("Action Group have been removed from the subscription successfully`r`n" + [Constants]::SingleDashLine, [MessageType]::Update);
 							}
 								
@@ -223,7 +221,7 @@ class Alerts: CommandBase
 			}
 		}
 
-		if($this.Force -or -not ($this.IsLatestVersionConfiguredOnSub($this.AlertPolicyObj.Version,[Constants]::AzSKAlertsVersionTagName,"Alerts")))
+		if($this.Force -or -not ([ResourceGroupHelper]::IsLatestVersionConfiguredOnSub($this.AlertPolicyObj.Version,[Constants]::AzSKAlertsVersionTagName,"Alerts")))
 		{
 			$allEmails = @();
 			# Parameter validation
@@ -298,10 +296,10 @@ class Alerts: CommandBase
 						$messages += [MessageData]::new([Constants]::SingleDashLine + "`r`nAdding following alerts to the subscription. Total alerts: $($enabledAlerts.Count)", $enabledAlerts);                                            
 
 						# Check if Resource Group exists
-						$existingRG = Get-AzureRmResourceGroup -Name $this.ResourceGroup -ErrorAction SilentlyContinue
+						$existingRG = Get-AzResourceGroup -Name $this.ResourceGroup -ErrorAction SilentlyContinue
 						if(-not $existingRG)
 						{
-							[Helpers]::NewAzSKResourceGroup($this.ResourceGroup,$this.ResourceGroupLocation,$this.GetCurrentModuleVersion())						
+							[ResourceGroupHelper]::NewAzSKResourceGroup($this.ResourceGroup,$this.ResourceGroupLocation,$this.GetCurrentModuleVersion())						
 						}
 						$messages += [MessageData]::new("All the alerts registered by this script will be placed in a resource group named: $($this.ResourceGroup)");
 						$isTargetResourceGroup = -not [string]::IsNullOrWhiteSpace($targetResourceGroup);
@@ -360,7 +358,7 @@ class Alerts: CommandBase
 							$alertArm.resources = $criticalAlertList 
 							$armTemplatePath = [Constants]::AzSKTempFolderPath + "Subscription.AlertARM.json";
 							$alertArm | ConvertTo-Json -Depth 100  | New-Item $armTemplatePath -Force | Out-Null
-							$alertDeployment = New-AzureRmResourceGroupDeployment -Name "AzSKAlertsDeployment" -ResourceGroupName $this.ResourceGroup -TemplateFile $armTemplatePath  -ErrorAction Stop							
+							$alertDeployment = New-AzResourceGroupDeployment -Name "AzSKAlertsDeployment" -ResourceGroupName $this.ResourceGroup -TemplateFile $armTemplatePath  -ErrorAction Stop							
 							Remove-Item $armTemplatePath  -ErrorAction SilentlyContinue
 						}
 						catch
@@ -371,14 +369,14 @@ class Alerts: CommandBase
 						[MessageData[]] $resultMessages = @();
 						#Logic to validate if Alerts are configured.
 						$configuredAlerts = @();		
-						$configuredAlerts = Get-AzureRmResource -ResourceType "Microsoft.Insights/activityLogAlerts" -ResourceGroupName  $this.ResourceGroup 
+						$configuredAlerts = Get-AzResource -ResourceType "Microsoft.Insights/activityLogAlerts" -ResourceGroupName  $this.ResourceGroup 
 						$actualConfiguredAlertsCount = ($configuredAlerts | Measure-Object).Count
 						$notConfiguredAlertsCount = $enabledAlerts.Count - $actualConfiguredAlertsCount
 						if( $actualConfiguredAlertsCount -ge  $enabledAlerts.Count)
 						{
 							#setting the tag at AzSKRG
 							$azskRGName = [ConfigurationManager]::GetAzSKConfigData().AzSKRGName;
-							[Helpers]::SetResourceGroupTags($azskRGName,@{[Constants]::AzSKAlertsVersionTagName=$this.AlertPolicyObj.Version}, $false)
+							[ResourceGroupHelper]::SetResourceGroupTags($azskRGName,@{[Constants]::AzSKAlertsVersionTagName=$this.AlertPolicyObj.Version}, $false)
 
 							#After successfully setting V2 alerts, clean V1 alert rules
 											
@@ -443,10 +441,10 @@ class Alerts: CommandBase
 						$messages += [MessageData]::new([Constants]::SingleDashLine + "`r`nAdding following alerts to the subscription. Total alerts: $($enabledAlerts.Count)", $enabledAlerts);                                            
 
 						# Check if Resource Group exists
-						$existingRG = Get-AzureRmResourceGroup -Name $this.ResourceGroup -ErrorAction SilentlyContinue
+						$existingRG = Get-AzResourceGroup -Name $this.ResourceGroup -ErrorAction SilentlyContinue
 						if(-not $existingRG)
 						{
-							[Helpers]::NewAzSKResourceGroup($this.ResourceGroup,$this.ResourceGroupLocation,$this.GetCurrentModuleVersion())						
+							[ResourceGroupHelper]::NewAzSKResourceGroup($this.ResourceGroup,$this.ResourceGroupLocation,$this.GetCurrentModuleVersion())						
 						}
 						$messages += [MessageData]::new("All the alerts registered by this script will be placed in a resource group named: $($this.ResourceGroup)");
 
@@ -474,7 +472,7 @@ class Alerts: CommandBase
 							$alertArm.resources = $criticalAlertList 
 							$armTemplatePath = [Constants]::AzSKTempFolderPath + "Subscription.AlertARM.json";
 							$alertArm | ConvertTo-Json -Depth 100  | New-Item $armTemplatePath -Force | Out-Null
-							$alertDeployment = New-AzureRmResourceGroupDeployment -Name "AzSKAlertsDeployment" -ResourceGroupName $this.ResourceGroup -TemplateFile $armTemplatePath  -ErrorAction Stop							
+							$alertDeployment = New-AzResourceGroupDeployment -Name "AzSKAlertsDeployment" -ResourceGroupName $this.ResourceGroup -TemplateFile $armTemplatePath  -ErrorAction Stop							
 							Remove-Item $armTemplatePath  -ErrorAction SilentlyContinue
 						}
 						catch
@@ -485,14 +483,14 @@ class Alerts: CommandBase
 						[MessageData[]] $resultMessages = @();
 						#Logic to validate if Alerts are configured.
 						$configuredAlerts = @();		
-						$configuredAlerts = Get-AzureRmResource -ResourceType "Microsoft.Insights/activityLogAlerts" -ResourceGroupName  $this.ResourceGroup 
+						$configuredAlerts = Get-AzResource -ResourceType "Microsoft.Insights/activityLogAlerts" -ResourceGroupName  $this.ResourceGroup 
 						$actualConfiguredAlertsCount = ($configuredAlerts | Measure-Object).Count
 						$notConfiguredAlertsCount = $enabledAlerts.Count - $actualConfiguredAlertsCount
 						if( $actualConfiguredAlertsCount -ge  $enabledAlerts.Count)
 						{
 							#setting the tag at AzSKRG
 							$azskRGName = [ConfigurationManager]::GetAzSKConfigData().AzSKRGName;
-							[Helpers]::SetResourceGroupTags($azskRGName,@{[Constants]::AzSKAlertsVersionTagName=$this.AlertPolicyObj.Version}, $false)
+							[ResourceGroupHelper]::SetResourceGroupTags($azskRGName,@{[Constants]::AzSKAlertsVersionTagName=$this.AlertPolicyObj.Version}, $false)
 
 							#After successfully setting V2 alerts, clean V1 alert rules
 											
@@ -580,7 +578,7 @@ class Alerts: CommandBase
 			$actionGroupArmResource.properties.PSObject.Properties.Remove('smsReceivers')		
 			$armTemplatePath =[Constants]::AzSKTempFolderPath + "Subscription.AlertActionGroup.json"
 			$actionGroupArm | ConvertTo-Json -Depth 100  | New-Item $armTemplatePath -Force
-			$actionGroupResource = New-AzureRmResourceGroupDeployment -Name "AzSKAlertActionGroupDeployment" -ResourceGroupName $this.ResourceGroup -TemplateFile $armTemplatePath  -ErrorAction Stop
+			$actionGroupResource = New-AzResourceGroupDeployment -Name "AzSKAlertActionGroupDeployment" -ResourceGroupName $this.ResourceGroup -TemplateFile $armTemplatePath  -ErrorAction Stop
 			$actionGroupId = $actionGroupResource.Outputs | Where-Object actionGroupId 
 			$actionGroupResourceId = $actionGroupId.Values | Select-Object -ExpandProperty Value                      
 			Remove-Item $armTemplatePath  -ErrorAction SilentlyContinue
@@ -649,7 +647,7 @@ class Alerts: CommandBase
 			}
 			$armTemplatePath =[Constants]::AzSKTempFolderPath + "Subscription.AlertActionGroup.json"
 			$actionGroupArm | ConvertTo-Json -Depth 100  | New-Item $armTemplatePath -Force
-			$actionGroupResource = New-AzureRmResourceGroupDeployment -Name "AzSKAlertActionGroupDeployment" -ResourceGroupName $this.ResourceGroup -TemplateFile $armTemplatePath  -ErrorAction Stop
+			$actionGroupResource = New-AzResourceGroupDeployment -Name "AzSKAlertActionGroupDeployment" -ResourceGroupName $this.ResourceGroup -TemplateFile $armTemplatePath  -ErrorAction Stop
 			$actionGroupId = $actionGroupResource.Outputs | Where-Object actionGroupId 
 			$actionGroupResourceId = $actionGroupId.Values | Select-Object -ExpandProperty Value                      
 			Remove-Item $armTemplatePath  -ErrorAction SilentlyContinue
@@ -678,7 +676,7 @@ class Alerts: CommandBase
 			
 			$armTemplatePath =[Constants]::AzSKTempFolderPath + "Subscription.AlertActionGroup.json"
 			$actionGroupArm | ConvertTo-Json -Depth 100  | New-Item $armTemplatePath -Force
-			$actionGroupResource = New-AzureRmResourceGroupDeployment -Name "AzSKAlertActionGroupDeployment" -ResourceGroupName $this.ResourceGroup -TemplateFile $armTemplatePath  -ErrorAction Stop
+			$actionGroupResource = New-AzResourceGroupDeployment -Name "AzSKAlertActionGroupDeployment" -ResourceGroupName $this.ResourceGroup -TemplateFile $armTemplatePath  -ErrorAction Stop
 			$actionGroupId = $actionGroupResource.Outputs | Where-Object actionGroupId 
 			$actionGroupResourceId = $actionGroupId.Values | Select-Object -ExpandProperty Value                      
 			Remove-Item $armTemplatePath  -ErrorAction SilentlyContinue
@@ -692,34 +690,18 @@ class Alerts: CommandBase
 		return 	$actionGroupResourceId
 	}
 
-	hidden [MessageData[]] CleanV1Alerts()
-	{
-		#Validate if V1(Old) Alert RG present 
-		$messages = @();
-		$existingRG = Get-AzureRmResourceGroup -Name $this.V1AlertRGName -ErrorAction SilentlyContinue
-		if($existingRG)
-		{
-			# Remove all locks
-			$messages += $this.RemoveAllResourceGroupLocks();
-			$messages += [MessageData]::new("Found old deprecated alert resource group (AzSKAlertsRG). Removing all V1 AzSK configured alerts by removing deprecated resource group");
-			Remove-AzureRmResourceGroup -Name $this.V1AlertRGName -Force
-		}
-
-		return $messages
-	}
-
 	hidden [MessageData[]] RemoveAllResourceGroupLocks()
 	{
 		$messages = @();
 		#Remove Resource Lock on Resource Group if any
 		$locks = @();
-		$locks += Get-AzureRmResourceLock -ResourceGroupName $this.V1AlertRGName
+		$locks += Get-AzResourceLock -ResourceGroupName $this.V1AlertRGName
 		if($locks.Count -ne 0)
 		{
 			$messages += [MessageData]::new("Removing following existing resource group locks so that old alert RG can be removed.", $locks);
 
 			$locks | ForEach-Object {
-				Remove-AzureRmResourceLock -LockId $_.LockId -Force | Out-Null
+				Remove-AzResourceLock -LockId $_.LockId -Force | Out-Null
 			}
 			Start-Sleep -Seconds 60
 		}
@@ -729,19 +711,19 @@ class Alerts: CommandBase
 	hidden [string] GetV1AlertSecurityEmailContact()
 	{
 		#Validate if V1(Old) Alert RG present 
-		$existingRG = Get-AzureRmResourceGroup -Name $this.V1AlertRGName -ErrorAction SilentlyContinue
+		$existingRG = Get-AzResourceGroup -Name $this.V1AlertRGName -ErrorAction SilentlyContinue
 		$emailList  = [string]::Empty
 		if($existingRG)
 		{
 			#Check if V1 alert resource is present
-			$configuredAlerts = Get-AzureRmResource -ResourceGroup $this.V1AlertRGName -ResourceType 'microsoft.insights/alertrules' 
+			$configuredAlerts = Get-AzResource -ResourceGroup $this.V1AlertRGName -ResourceType 'microsoft.insights/alertrules' 
 			if(($configuredAlerts | Measure-Object).Count -gt 0)
 			{
 				#Validate if command exists. As this command will soon get deprecated from AzureRM
-				if (Get-Command "Get-AzureRmAlertRule" -errorAction SilentlyContinue)
+				if (Get-Command "Get-AzAlertRule" -errorAction SilentlyContinue)
 				{
 					$alertResourceDetails = $configuredAlerts | Select-Object -First 1
-					$alertRuleDetails = Get-AzureRMAlertRule -ResourceGroup $this.V1AlertRGName -Name $alertResourceDetails.Name -WarningAction SilentlyContinue
+					$alertRuleDetails = Get-AzAlertRule -ResourceGroup $this.V1AlertRGName -Name $alertResourceDetails.Name -WarningAction SilentlyContinue
 					if($alertRuleDetails)
 					{
 						$emailList = [string]::Join(",",($alertRuleDetails.Actions | Select-Object @{N='EmailList';E={$_.CustomEmails}} ).EmailList)
@@ -756,10 +738,10 @@ class Alerts: CommandBase
 	hidden [PSObject] GetAlertActionGroup($rgName, $actionGroupName)
 	{
 		#Validate if Alert RG present 
-		$existingRG = Get-AzureRmResourceGroup -Name $rgName -ErrorAction SilentlyContinue
+		$existingRG = Get-AzResourceGroup -Name $rgName -ErrorAction SilentlyContinue
 		if($existingRG)
 		{
-			$AGRSource = Get-AzureRmResource -ResourceType  microsoft.insights/actiongroups -ResourceGroupName $rgName -Name $actionGroupName
+			$AGRSource = Get-AzResource -ResourceType  microsoft.insights/actiongroups -ResourceGroupName $rgName -Name $actionGroupName
 			return $AGRSource;
 		}
 		else
@@ -787,7 +769,7 @@ class Alerts: CommandBase
 		}
 		else
 		{ 
-			  $existingActionGrp= Get-AzureRmResource -ResourceId $actionGroupResource.ResourceId
+			  $existingActionGrp= Get-AzResource -ResourceId $actionGroupResource.ResourceId
 			  if(($existingActionGrp.Properties.webhookReceivers | Measure-Object).Count -gt 0)
 			  {
 				$webhookReceivers=$existingActionGrp.Properties.webhookReceivers | Select-Object -first 1
@@ -825,7 +807,7 @@ class Alerts: CommandBase
 		#check for empty string
 		if($null -ne $actionGroupResourceId -and (-not [string]::IsNullOrWhiteSpace($runBookResourceID)))
 		{
-			$existingActionGrp= Get-AzureRmResource -ResourceId $actionGroupResourceId.ResourceId
+			$existingActionGrp= Get-AzResource -ResourceId $actionGroupResourceId.ResourceId
 			$webhookReceiversList = @();
 			if(-not [string]::IsNullOrWhiteSpace($existingWebhookUri))
 			{
@@ -842,26 +824,27 @@ class Alerts: CommandBase
 			$object = new-object psobject -Property $props
 			$webhookReceiversList += $object 
 			$existingActionGrp.Properties.webhookReceivers=$webhookReceiversList
-			$existingActionGrp | Set-AzureRmResource -Force
+			$existingActionGrp | Set-AzResource -Force
 
 		}
 		return [string]::Empty
 	}
 	hidden [string] RemoveActionGroupWebhookUri()
 	{
+		$type = "Alert"
 	  $actionGroupResourceId = $this.GetAlertActionGroup($this.ResourceGroup, [Constants]::AlertActionGroupName)
-	  $runBookResourceID= $this.GetAlertRunBookResourceId()
+	  $runBookResourceID= $this.GetAlertRunBookResourceId($type)
 
 	  if($null -ne $actionGroupResourceId -and (-not [string]::IsNullOrWhiteSpace($runBookResourceID)))
 	  {
 	   try
 	   {
-	     $existingActionGrp= Get-AzureRmResource -ResourceId $actionGroupResourceId.ResourceId
+	     $existingActionGrp= Get-AzResource -ResourceId $actionGroupResourceId.ResourceId
          $webhookReceiversList = @();
          $existingActionGrp.Properties.webhookReceivers=$webhookReceiversList
-         $existingActionGrp | Set-AzureRmResource -Force
+         $existingActionGrp | Set-AzResource -Force
 		 #Remove Webhook from Automation Runbook as well
-		 Remove-AzureRmAutomationWebhook -Name $this.AutomationWebhookName -ResourceGroup $this.ResourceGroup -AutomationAccountName $this.AutomationAccountName -ErrorAction SilentlyContinue
+		 Remove-AzAutomationWebhook -Name $this.AutomationWebhookName -ResourceGroup $this.ResourceGroup -AutomationAccountName $this.AutomationAccountName -ErrorAction SilentlyContinue
 	   }
 	   catch
 	   {
@@ -873,7 +856,7 @@ class Alerts: CommandBase
 	hidden [string] GetAlertRunbookResourceId([string] $type)
 	{
 		#Validate if Alert RG present $this.ResourceGroup
-		$existingRG = Get-AzureRmResourceGroup -Name $this.ResourceGroup -ErrorAction SilentlyContinue
+		$existingRG = Get-AzResourceGroup -Name $this.ResourceGroup -ErrorAction SilentlyContinue
 		if($existingRG)
 		{
 			$RunbookNamebyType = ""
@@ -885,8 +868,8 @@ class Alerts: CommandBase
 			{
 				$RunbookNamebyType = $this.Alert_ResourceCreation_Runbook
 			}
-		     $resourceName=$this.AutomationAccountName+"/"+$RunbookNamebyType
-			 $AlertRunBook = Get-AzureRmResource -ResourceType  "Microsoft.Automation/automationAccounts/runbooks" -ResourceGroupName $this.ResourceGroup -Name $resourceName
+		   $resourceName= $RunbookNamebyType
+			 $AlertRunBook = Get-AzResource -ResourceType  "Microsoft.Automation/automationAccounts/runbooks" -ResourceGroupName $this.ResourceGroup -Name $resourceName
 			if($AlertRunBook )
 			{
 				return $AlertRunBook.ResourceId
@@ -919,8 +902,8 @@ class Alerts: CommandBase
 		}
 
 	    $webhookExpiryDate=(Get-Date).AddDays($this.WebhookExpiryInDays)
-		Remove-AzureRmAutomationWebhook -Name $Alertname -ResourceGroup $this.ResourceGroup -AutomationAccountName $this.AutomationAccountName -ErrorAction SilentlyContinue
-		$Webhook = New-AzureRmAutomationWebhook -Name $Alertname -IsEnabled $True -ExpiryTime $webhookExpiryDate -RunbookName $RunbookNamebyType -ResourceGroup $this.ResourceGroup -AutomationAccountName $this.AutomationAccountName -Force
+		Remove-AzAutomationWebhook -Name $Alertname -ResourceGroup $this.ResourceGroup -AutomationAccountName $this.AutomationAccountName -ErrorAction SilentlyContinue
+		$Webhook = New-AzAutomationWebhook -Name $Alertname -IsEnabled $True -ExpiryTime $webhookExpiryDate -RunbookName $RunbookNamebyType -ResourceGroup $this.ResourceGroup -AutomationAccountName $this.AutomationAccountName -Force
         $NewWebHookUri=$Webhook.WebhookURI
 	    return $NewWebHookUri;		
 		}
